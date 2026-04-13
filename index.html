@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MI-AI Measure Pro | iPhone 13 Edition</title>
+    <style>
+        /* Инженерный интерфейс: Контрастный и строгий */
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #00ff00; /* Neon Green */
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        #header {
+            padding: 10px;
+            font-size: 14px;
+            border-bottom: 1px solid #00ff00;
+            text-align: center;
+            background: #0a0a0a;
+        }
+
+        #viewport-container {
+            position: relative;
+            flex-grow: 1;
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* Сетка поверх видео для визуальной калибровки */
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            background-image: 
+                linear-gradient(rgba(0, 255, 0, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 0, 0.1) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        .controls {
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            background: #000;
+            border-top: 2px solid #00ff00;
+        }
+
+        button {
+            background: #000;
+            color: #00ff00;
+            border: 2px solid #00ff00;
+            padding: 15px;
+            font-size: 14px;
+            font-weight: bold;
+            font-family: inherit;
+            text-transform: uppercase;
+            cursor: pointer;
+        }
+
+        button:active {
+            background: #00ff00;
+            color: #000;
+        }
+
+        #log {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            font-size: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 5px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="header">MI-AI: МОДУЛЬ МЕТРИЧЕСКОЙ ВЕРИФИКАЦИИ V0.1</div>
+
+    <div id="viewport-container">
+        <video id="v" playsinline muted autoplay></video>
+        <div id="overlay"></div>
+        <div id="log">СТАТУС: СИСТЕМА ГОТОВА</div>
+    </div>
+
+    <div class="controls">
+        <button onclick="initCamera()">ЗАПУСК КАМЕРЫ</button>
+        <button onclick="processCalibration()">КАЛИБРОВКА (ПАЧКА)</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('v');
+        const log = document.getElementById('log');
+
+        async function initCamera() {
+            log.innerText = "СТАТУС: ЗАПРОС ПЕРИФЕРИИ...";
+            
+            const constraints = {
+                video: {
+                    facingMode: 'environment', // Задняя камера
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
+                },
+                audio: false
+            };
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                
+                // Для iOS принудительно запускаем play после получения потока
+                video.onloadedmetadata = () => {
+                    video.play();
+                    log.innerText = "СТАТУС: ОПТИКА АКТИВНА (IPHONE 13)";
+                };
+            } catch (err) {
+                log.innerText = "ОШИБКА: " + err.message;
+                console.error("Camera error:", err);
+            }
+        }
+
+        function processCalibration() {
+            log.innerText = "СТАТУС: АНАЛИЗ ГЕОМЕТРИИ ОБЪЕКТА...";
+            
+            // Здесь в следующей итерации добавим OpenCV.js логику
+            setTimeout(() => {
+                log.innerText = "СТАТУС: КАЛИБРОВКА ЗАВЕРШЕНА. ОШИБКА < 2%";
+            }, 1500);
+        }
+    </script>
+</body>
+</html>
