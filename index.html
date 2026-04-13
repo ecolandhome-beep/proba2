@@ -2,91 +2,108 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>MI-AI Auto-Measure</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>MI-AI: Pro Measure</title>
     <script async src="https://docs.opencv.org/4.x/opencv.js" onload="cvReady();"></script>
     <style>
-        :root { --green: #0f0; }
-        body { margin: 0; background: #000; color: var(--green); font-family: monospace; overflow: hidden; height: 100svh; display: flex; flex-direction: column; }
-        
-        /* Видоискатель теперь занимает верхнюю часть и не лезет под кнопки */
-        #view { position: relative; flex-grow: 1; background: #111; overflow: hidden; }
-        video, canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; }
-        
-        /* Панель управления всегда видна над адресной строкой */
-        .ui-panel { height: 120px; background: #000; border-top: 2px solid var(--green); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; box-sizing: border-box; }
-        
-        button { background: #000; color: var(--green); border: 1px solid var(--green); text-transform: uppercase; font-size: 11px; }
-        #res-box { grid-column: span 2; border: 1px dashed var(--green); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; }
-        
-        #status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8); padding: 5px; font-size: 10px; z-index: 5; }
+        :root { --green: #0f0; --bg: #000; }
+        body { 
+            margin: 0; background: var(--bg); color: var(--green); 
+            font-family: 'Courier New', monospace; 
+            height: 100vh; display: flex; flex-direction: column;
+        }
+        #view-port { 
+            position: relative; flex: 1; overflow: hidden; 
+            display: flex; justify-content: center; align-items: center;
+        }
+        video, canvas { 
+            position: absolute; width: 100%; height: 100%; 
+            object-fit: contain; /* Чтобы не было растяжений */
+        }
+        .ui-panel { 
+            background: #0a0a0a; border-top: 1px solid var(--green);
+            padding: 15px; padding-bottom: calc(15px + env(safe-area-inset-bottom));
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+        }
+        button { 
+            background: transparent; color: var(--green); 
+            border: 1px solid var(--green); padding: 12px; 
+            font-size: 12px; text-transform: uppercase;
+        }
+        #res { 
+            grid-column: span 2; font-size: 24px; text-align: center; 
+            border: 1px dashed var(--green); margin-bottom: 5px; padding: 5px;
+        }
+        #status { 
+            position: absolute; top: 10px; left: 10px; z-index: 10;
+            background: rgba(0,0,0,0.7); font-size: 10px; padding: 4px;
+        }
     </style>
 </head>
 <body>
 
-<div id="status">СИСТЕМА: ЗАГРУЗКА CV...</div>
+<div id="status">CV: LOADING...</div>
 
-<div id="view">
-    <video id="v" playsinline muted></video>
+<div id="view-port">
+    <video id="v" playsinline muted autoplay></video>
     <canvas id="c"></canvas>
 </div>
 
 <div class="ui-panel">
-    <button onclick="init()">СТАРТ КАМЕРЫ</button>
-    <button onclick="autoCalibrate()">АВТО-ПОИСК ПАЧКИ</button>
-    <div id="res-box">--- MM</div>
+    <div id="res">--- MM</div>
+    <button onclick="start()">1. КАМЕРА</button>
+    <button onclick="detectEdges()">2. АНАЛИЗ ГРАНИЦ</button>
 </div>
 
 <script>
-    let streamActive = false;
-    const v = document.getElementById('v');
-    const c = document.getElementById('c');
-    const ctx = c.getContext('2d');
-    let pxlPerMm = 0;
+    let stream, video, canvas, ctx;
+    let isProcessing = false;
 
-    function cvReady() { document.getElementById('status').innerText = "СИСТЕМА: ГОТОВА К АНАЛИЗУ"; }
+    function cvReady() { document.getElementById('status').innerText = "CV: ENGINE READY"; }
 
-    async function init() {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        v.srcObject = stream;
-        v.play();
-        streamActive = true;
-        processFrame();
+    async function start() {
+        video = document.getElementById('v');
+        canvas = document.getElementById('c');
+        ctx = canvas.getContext('2d');
+
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', aspectRatio: 1.777 } 
+            });
+            video.srcObject = stream;
+            document.getElementById('status').innerText = "STREAM: ACTIVE (16:9)";
+            
+            // Настройка размера холста под поток
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            };
+        } catch (e) { alert("Ошибка камеры: " + e); }
     }
 
-    function processFrame() {
-        if (!streamActive) return;
-        
-        // Отрисовка видео на канвас для анализа
-        ctx.drawImage(v, 0, 0, c.width, c.height);
-        
-        // Здесь будет отрисовка сетки или найденных контуров
-        if (pxlPerMm === 0) {
-            ctx.strokeStyle = "rgba(0, 255, 0, 0.5)";
-            ctx.strokeRect(c.width/4, c.height/4, c.width/2, c.height/2);
-            document.getElementById('status').innerText = "ПОМЕСТИТЕ ПАЧКУ В ЦЕНТР";
-        }
-        
-        requestAnimationFrame(processFrame);
+    function detectEdges() {
+        if (!cv || !video) return;
+        isProcessing = !isProcessing;
+        if (isProcessing) render();
     }
 
-    function autoCalibrate() {
-        // Имитация детекции контура (в след. версии добавим реальный Mat из OpenCV)
-        // Сейчас фиксируем масштаб для пачки 85мм, занимающей 50% ширины экрана
-        const simulatedPxlWidth = c.width * 0.5; 
-        pxlPerMm = simulatedPxlWidth / 85; 
+    function render() {
+        if (!isProcessing) return;
         
-        document.getElementById('status').innerText = "ОТКАЛИБРОВАНО: 85.0 MM";
-        document.getElementById('res-box').innerText = "READY";
+        // Магия OpenCV: захват кадра и поиск краев
+        let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+        let dst = new cv.Mat();
+        let cap = new cv.VideoCapture(video);
+        
+        cap.read(src);
+        cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+        cv.Canny(dst, dst, 50, 150, 3); // Детектор Кэнни
+        
+        cv.imshow('c', dst); // Вывод ч/б карты границ
+        
+        src.delete(); dst.delete();
+        if (isProcessing) requestAnimationFrame(render);
     }
-
-    // Авто-подстройка размера канваса под экран iPhone 13
-    window.onload = () => {
-        c.width = window.innerWidth;
-        c.height = window.innerHeight * 0.75;
-    };
 </script>
-
 </body>
-</html>
 </html>
