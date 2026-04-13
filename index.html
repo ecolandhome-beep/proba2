@@ -3,22 +3,39 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: 3D Edge Engine</title>
+    <title>MI-AI: 3D Edge Analysis</title>
     <script async src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.3/dist/opencv.js" onload="cvLoaded();"></script>
     <style>
-        :root { --green: #0f0; }
-        body { margin: 0; background: #000; color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-        #view { position: relative; flex: 1; }
-        video { position: absolute; width: 1px; height: 1px; opacity: 0; }
-        canvas { width: 100%; height: 100%; object-fit: contain; }
-        .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
-        #status { position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px; background: rgba(0,0,0,0.8); padding: 5px; font-size: 10px; border: 1px solid var(--green); z-index: 10; }
+        :root { --green: #0f0; --bg: #000; }
+        body { 
+            margin: 0; background: var(--bg); color: var(--green); 
+            font-family: 'Courier New', monospace; height: 100vh; 
+            display: flex; flex-direction: column; overflow: hidden; 
+        }
+        #view { position: relative; flex: 1; overflow: hidden; background: #111; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+        canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; z-index: 2; pointer-events: none; }
+        
+        .ui { 
+            background: #0a0a0a; border-top: 1px solid var(--green); 
+            padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom));
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100;
+        }
+        #status { 
+            position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px; 
+            font-size: 10px; background: rgba(0,0,0,0.8); padding: 5px; border: 1px solid var(--green); z-index: 110;
+        }
+        button { 
+            background: transparent; color: var(--green); border: 2px solid var(--green);
+            padding: 15px; font-family: inherit; font-weight: bold; text-transform: uppercase;
+        }
+        button:disabled { border-color: #333; color: #333; }
+        #res-box { grid-column: span 2; text-align: center; border: 1px dashed var(--green); padding: 10px; font-size: 20px; margin-bottom: 5px; }
     </style>
 </head>
 <body>
 
-<div id="status">CV: ИНИЦИАЛИЗАЦИЯ 3D-ЯДРА...</div>
+<div id="status">CV: ЗАГРУЗКА ЯДРА...</div>
 
 <div id="view">
     <video id="v" playsinline muted autoplay></video>
@@ -26,68 +43,80 @@
 </div>
 
 <div class="ui">
-    <button onclick="start()">1. СТАРТ</button>
-    <button id="btn-3d" onclick="toggle3D()" disabled>2. ЗАХВАТ РЕБЕР</button>
+    <div id="res-box">--- MM</div>
+    <button onclick="start()">1. ПУСК</button>
+    <button id="btn-3d" onclick="toggle3D()" disabled>2. АВТО-РЕБРА</button>
 </div>
 
 <script>
     let video = document.getElementById('v');
     let canvas = document.getElementById('c');
     let ctx = canvas.getContext('2d');
-    let src, dst, lines;
     let is3D = false;
+    let src, gray, edges, lines;
 
     function cvLoaded() {
         cv['onRuntimeInitialized'] = () => {
-            document.getElementById('status').innerText = "CV: 3D ENGINE READY";
+            document.getElementById('status').innerText = "CV: 3D ENGINE ACTIVE";
             document.getElementById('btn-3d').disabled = false;
         };
     }
 
     async function start() {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640 } });
-        video.srcObject = stream;
-        requestAnimationFrame(render);
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: { ideal: 640 } } 
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                // Инициализация матриц в памяти (без вывода на экран)
+                src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+                gray = new cv.Mat();
+                edges = new cv.Mat();
+                lines = new cv.Mat();
+                document.getElementById('status').innerText = "SENSOR: ONLINE";
+                render();
+            };
+        } catch (e) { alert("Ошибка камеры: " + e); }
     }
 
-    function toggle3D() { 
-        is3D = !is3D; 
-        if(is3D) {
-            src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-            dst = new cv.Mat();
-            lines = new cv.Mat();
-        }
+    function toggle3D() {
+        is3D = !is3D;
+        document.getElementById('status').innerText = is3D ? "MODE: 3D EDGE DETECT" : "MODE: DIRECT";
     }
 
     function render() {
-        if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            
-            if (is3D) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        if (is3D && video.readyState === video.HAVE_ENOUGH_DATA) {
+            try {
                 let cap = new cv.VideoCapture(video);
                 cap.read(src);
-                cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-                cv.Canny(dst, dst, 50, 150);
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
                 
-                // Преобразование Хафа для поиска прямых линий (ребер)
-                cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 50, 50, 10);
+                // Детектор Кэнни для поиска границ
+                cv.Canny(gray, edges, 50, 150);
                 
-                // Отрисовываем исходное видео, а поверх - найденные ребра
-                ctx.drawImage(video, 0, 0);
+                // Преобразование Хафа (HoughLinesP) для поиска именно ПРЯМЫХ (ребер)
+                cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 40, 30, 10);
+                
                 ctx.strokeStyle = "red";
                 ctx.lineWidth = 3;
                 
                 for (let i = 0; i < lines.rows; ++i) {
-                    let l = lines.data32S.subarray(i * 4, i * 4 + 4);
+                    let startX = lines.data32S[i * 4];
+                    let startY = lines.data32S[i * 4 + 1];
+                    let endX = lines.data32S[i * 4 + 2];
+                    let endY = lines.data32S[i * 4 + 3];
+                    
                     ctx.beginPath();
-                    ctx.moveTo(l[0], l[1]);
-                    ctx.lineTo(l[2], l[3]);
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
                     ctx.stroke();
                 }
-            } else {
-                ctx.drawImage(video, 0, 0);
-            }
+            } catch (err) { console.error(err); }
         }
         requestAnimationFrame(render);
     }
