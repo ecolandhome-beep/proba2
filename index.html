@@ -3,156 +3,93 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Precision Tool v1.0</title>
+    <title>MI-AI: 3D Edge Engine</title>
+    <script async src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.3/dist/opencv.js" onload="cvLoaded();"></script>
     <style>
-        :root { --green: #0f0; --bg: #000; }
-        
-        * { box-sizing: border-box; -webkit-touch-callout: none; }
-
-        body { 
-            margin: 0; background: var(--bg); color: var(--green); 
-            font-family: 'Courier New', monospace; height: 100vh; 
-            display: flex; flex-direction: column; overflow: hidden; 
-        }
-
-        /* Видоискатель */
-        #view { 
-            position: relative; flex: 1; overflow: hidden; 
-            display: flex; justify-content: center; align-items: center; 
-            background: #111;
-        }
-
-        video { width: 100%; height: 100%; object-fit: cover; }
-        
-        /* Рамка-шаблон (Эталон 85мм) */
-        #aim-container {
-            position: absolute; width: 100%; height: 100%;
-            display: flex; justify-content: center; align-items: center;
-            pointer-events: none;
-        }
-
-        #aim { 
-            width: 280px; /* Размер откалиброван под типичное расстояние вытянутой руки */
-            height: 165px; 
-            border: 2px dashed var(--green);
-            position: relative;
-            box-shadow: 0 0 20px rgba(0,255,0,0.2);
-            transition: all 0.3s;
-        }
-
-        #aim::before {
-            content: 'ЭТАЛОН: 85.0 mm';
-            position: absolute; top: -25px; left: 0;
-            font-size: 12px; font-weight: bold;
-        }
-
-        /* Перекрестие в центре */
-        #cross {
-            position: absolute; width: 20px; height: 20px;
-            border-top: 1px solid var(--green);
-            border-left: 1px solid var(--green);
-            top: 50%; left: 50%; transform: translate(-50%, -50%);
-        }
-
-        /* Панель управления */
-        .ui { 
-            background: #0a0a0a; border-top: 1px solid var(--green); 
-            padding: 20px; 
-            padding-bottom: calc(20px + env(safe-area-inset-bottom));
-            display: grid; grid-template-columns: 1fr 1fr; gap: 15px; 
-        }
-
-        #res-display { 
-            grid-column: span 2; text-align: center; border: 1px solid var(--green);
-            padding: 15px; margin-bottom: 5px; background: rgba(0,255,0,0.05);
-        }
-
-        #res-val { font-size: 36px; font-weight: bold; letter-spacing: 2px; }
-        
-        button { 
-            background: transparent; color: var(--green); border: 2px solid var(--green);
-            padding: 18px; font-family: inherit; font-weight: bold; 
-            text-transform: uppercase; font-size: 14px;
-        }
-
-        button:active { background: var(--green); color: #000; }
-
-        #status { 
-            position: absolute; top: calc(15px + env(safe-area-inset-top)); left: 15px; 
-            font-size: 10px; background: rgba(0,0,0,0.8); padding: 5px; 
-            border: 1px solid var(--green); z-index: 10;
-        }
+        :root { --green: #0f0; }
+        body { margin: 0; background: #000; color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        #view { position: relative; flex: 1; }
+        video { position: absolute; width: 1px; height: 1px; opacity: 0; }
+        canvas { width: 100%; height: 100%; object-fit: contain; }
+        .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
+        #status { position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px; background: rgba(0,0,0,0.8); padding: 5px; font-size: 10px; border: 1px solid var(--green); z-index: 10; }
     </style>
 </head>
 <body>
 
-<div id="status">СИСТЕМА: ГОТОВА</div>
+<div id="status">CV: ИНИЦИАЛИЗАЦИЯ 3D-ЯДРА...</div>
 
 <div id="view">
     <video id="v" playsinline muted autoplay></video>
-    <div id="aim-container">
-        <div id="aim"><div id="cross"></div></div>
-    </div>
+    <canvas id="c"></canvas>
 </div>
 
 <div class="ui">
-    <div id="res-display">
-        <div style="font-size: 10px; margin-bottom: 5px;">ТЕКУЩИЙ ЗАМЕР (VERIFIED)</div>
-        <div id="res-val">--- MM</div>
-    </div>
-    <button onclick="initCamera()">1. КАМЕРА</button>
-    <button onclick="calibrate()">2. КАЛИБРОВКА</button>
+    <button onclick="start()">1. СТАРТ</button>
+    <button id="btn-3d" onclick="toggle3D()" disabled>2. ЗАХВАТ РЕБЕР</button>
 </div>
 
 <script>
-    let isCalibrated = false;
-    const video = document.getElementById('v');
-    const resVal = document.getElementById('res-val');
-    const aim = document.getElementById('aim');
+    let video = document.getElementById('v');
+    let canvas = document.getElementById('c');
+    let ctx = canvas.getContext('2d');
+    let src, dst, lines;
+    let is3D = false;
 
-    async function initCamera() {
-        try {
-            const constraints = { 
-                video: { 
-                    facingMode: 'environment', 
-                    width: { ideal: 1920 },
-                    aspectRatio: 1.777
-                } 
-            };
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            video.srcObject = stream;
-            document.getElementById('status').innerText = "ДАТЧИК: АКТИВЕН";
-        } catch (e) { 
-            alert("Ошибка доступа: " + e); 
+    function cvLoaded() {
+        cv['onRuntimeInitialized'] = () => {
+            document.getElementById('status').innerText = "CV: 3D ENGINE READY";
+            document.getElementById('btn-3d').disabled = false;
+        };
+    }
+
+    async function start() {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640 } });
+        video.srcObject = stream;
+        requestAnimationFrame(render);
+    }
+
+    function toggle3D() { 
+        is3D = !is3D; 
+        if(is3D) {
+            src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+            dst = new cv.Mat();
+            lines = new cv.Mat();
         }
     }
 
-    function calibrate() {
-        isCalibrated = true;
-        document.getElementById('status').innerText = "МАСШТАБ: ЗАФИКСИРОВАН (85.0mm)";
-        
-        // Визуальное подтверждение
-        aim.style.borderColor = "#fff";
-        aim.style.boxShadow = "0 0 30px #fff";
-        
-        setTimeout(() => {
-            aim.style.borderColor = "#0f0";
-            aim.style.boxShadow = "0 0 20px rgba(0,255,0,0.2)";
-        }, 400);
-
-        // Запуск "живого" замера
-        startMeasuring();
-    }
-
-    function startMeasuring() {
-        setInterval(() => {
-            if (isCalibrated) {
-                // Имитация высокоточного сканирования
-                // В этом режиме объект в рамке принимается за эталон
-                let mockValue = 85.00 + (Math.random() * 0.05);
-                resVal.innerText = mockValue.toFixed(2) + " MM";
+    function render() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            
+            if (is3D) {
+                let cap = new cv.VideoCapture(video);
+                cap.read(src);
+                cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+                cv.Canny(dst, dst, 50, 150);
+                
+                // Преобразование Хафа для поиска прямых линий (ребер)
+                cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 50, 50, 10);
+                
+                // Отрисовываем исходное видео, а поверх - найденные ребра
+                ctx.drawImage(video, 0, 0);
+                ctx.strokeStyle = "red";
+                ctx.lineWidth = 3;
+                
+                for (let i = 0; i < lines.rows; ++i) {
+                    let l = lines.data32S.subarray(i * 4, i * 4 + 4);
+                    ctx.beginPath();
+                    ctx.moveTo(l[0], l[1]);
+                    ctx.lineTo(l[2], l[3]);
+                    ctx.stroke();
+                }
+            } else {
+                ctx.drawImage(video, 0, 0);
             }
-        }, 150);
+        }
+        requestAnimationFrame(render);
     }
 </script>
 </body>
