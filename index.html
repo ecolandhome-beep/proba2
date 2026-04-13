@@ -3,33 +3,76 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Edge Detect Pro</title>
-    <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onCvLoaded();"></script>
+    <title>MI-AI: Metric Engine v0.3</title>
+    
+    <script async src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.3/dist/opencv.js" onload="onCvLoaded();"></script>
+
     <style>
         :root { --green: #0f0; --bg: #000; }
-        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; }
-        #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; }
-        video, canvas { position: absolute; width: 100%; height: 100%; object-fit: contain; }
-        .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 15px; padding-bottom: calc(15px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        button { background: transparent; color: var(--green); border: 1px solid var(--green); padding: 15px; font-size: 12px; text-transform: uppercase; opacity: 0.5; }
-        button.ready { opacity: 1; border-width: 2px; }
-        #res { grid-column: span 2; font-size: 22px; text-align: center; border: 1px dashed var(--green); margin-bottom: 5px; padding: 5px; }
-        #status { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,0,0,0.8); padding: 5px; font-size: 10px; }
+        
+        * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; }
+
+        body { 
+            margin: 0; background: var(--bg); color: var(--green); 
+            font-family: 'Courier New', monospace; 
+            height: 100vh; display: flex; flex-direction: column;
+            overflow: hidden;
+        }
+
+        #status { 
+            position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px; 
+            z-index: 100; background: rgba(0,0,0,0.8); padding: 5px; font-size: 10px;
+            border: 1px solid var(--green);
+        }
+
+        #view-container { 
+            position: relative; flex: 1; background: #111;
+            display: flex; justify-content: center; align-items: center;
+        }
+
+        video, canvas { 
+            position: absolute; width: 100%; height: 100%; object-fit: contain; 
+        }
+
+        /* Панель управления с учетом безопасных зон iPhone */
+        .ui-panel { 
+            background: #0a0a0a; border-top: 1px solid var(--green);
+            padding: 15px; 
+            padding-bottom: calc(15px + env(safe-area-inset-bottom));
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+            z-index: 101;
+        }
+
+        button { 
+            background: transparent; color: var(--green); 
+            border: 1px solid var(--green); padding: 15px; 
+            font-size: 12px; font-family: inherit; text-transform: uppercase;
+            cursor: pointer; opacity: 0.4; pointer-events: none;
+        }
+
+        button.active { opacity: 1; pointer-events: auto; border-width: 2px; }
+        button:active { background: var(--green); color: #000; }
+
+        #result-display { 
+            grid-column: span 2; font-size: 24px; text-align: center; 
+            border: 1px dashed var(--green); margin-bottom: 5px; padding: 10px;
+            text-shadow: 0 0 5px var(--green);
+        }
     </style>
 </head>
 <body>
 
-<div id="status">CV: ЗАГРУЗКА ЯДРА...</div>
+<div id="status">CV: ЗАГРУЗКА БИБЛИОТЕКИ...</div>
 
-<div id="view">
+<div id="view-container">
     <video id="v" playsinline muted autoplay></video>
     <canvas id="c"></canvas>
 </div>
 
-<div class="ui">
-    <div id="res">--- MM</div>
-    <button id="btn-start" onclick="startCamera()">1. КАМЕРА</button>
-    <button id="btn-cv" onclick="toggleCV()">2. АНАЛИЗ ГРАНИЦ</button>
+<div class="ui-panel">
+    <div id="result-display">--- MM</div>
+    <button id="btn-camera" onclick="startCamera()">1. КАМЕРА</button>
+    <button id="btn-cv" onclick="toggleAnalysis()">2. АНАЛИЗ ГРАНИЦ</button>
 </div>
 
 <script>
@@ -37,36 +80,50 @@
     let cvLoaded = false;
     let isProcessing = false;
 
+    // 1. Ждем загрузки OpenCV
     function onCvLoaded() {
-        cvLoaded = true;
-        document.getElementById('status').innerText = "CV: ЯДРО ЗАГРУЖЕНО";
-        document.getElementById('btn-cv').classList.add('ready');
+        // OpenCV.js требует времени на инициализацию внутри WASM
+        cv['onRuntimeInitialized'] = () => {
+            cvLoaded = true;
+            document.getElementById('status').innerText = "CV: ЯДРО АКТИВНО";
+            document.getElementById('btn-camera').classList.add('active');
+            document.getElementById('btn-cv').classList.add('active');
+        };
     }
 
+    // 2. Запуск камеры iPhone 13
     async function startCamera() {
         video = document.getElementById('v');
         canvas = document.getElementById('c');
         ctx = canvas.getContext('2d');
 
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment', aspectRatio: 1.777 } 
-        });
-        video.srcObject = stream;
-        document.getElementById('btn-start').classList.add('ready');
+        try {
+            const constraints = { 
+                video: { 
+                    facingMode: 'environment', 
+                    aspectRatio: 1.777,
+                    width: { ideal: 1280 } 
+                } 
+            };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            document.getElementById('status').innerText = "STREAM: ONLINE (16:9)";
+        } catch (e) {
+            alert("Доступ к камере отклонен или ошибка: " + e);
+        }
     }
 
-    function toggleCV() {
-        if (!cvLoaded) {
-            alert("Подождите, OpenCV еще грузится...");
-            return;
-        }
+    // 3. Включение/выключение анализа
+    function toggleAnalysis() {
+        if (!cvLoaded) return;
+        
         isProcessing = !isProcessing;
         if (isProcessing) {
-            // Инициализация матриц OpenCV один раз при старте
+            // Подготовка матриц под размер видео
             src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
             dst = new cv.Mat();
             cap = new cv.VideoCapture(video);
-            document.getElementById('status').innerText = "CV: АНАЛИЗ АКТИВЕН";
+            document.getElementById('status').innerText = "CV: АНАЛИЗ ГРАНИЦ ВКЛ";
             requestAnimationFrame(processFrame);
         } else {
             document.getElementById('status').innerText = "CV: ПРИОСТАНОВЛЕНО";
@@ -74,21 +131,32 @@
         }
     }
 
+    // 4. Основной цикл обработки (Canny Edge Detection)
     function processFrame() {
         if (!isProcessing) return;
 
+        // Синхронизируем размер холста
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
 
-        cap.read(src);
-        cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-        // Детектор Кэнни: выделяет четкие перепады контраста (границы объектов)
-        cv.Canny(dst, dst, 50, 150, 3);
-        
-        cv.imshow('c', dst);
-        
-        requestAnimationFrame(processFrame);
+        try {
+            cap.read(src);
+            cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+            
+            // Кэнни: Порог 50-150 оптимален для контрастных объектов (пачка на фоне)
+            cv.Canny(dst, dst, 50, 150, 3);
+            
+            // Вывод результата на экран
+            cv.imshow('c', dst);
+            
+            requestAnimationFrame(processFrame);
+        } catch (err) {
+            console.error(err);
+            isProcessing = false;
+        }
     }
 </script>
+</body>
+</html>
 </body>
 </html>
