@@ -3,106 +3,91 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Pro Measure</title>
-    <script async src="https://docs.opencv.org/4.x/opencv.js" onload="cvReady();"></script>
+    <title>MI-AI: Edge Detect Pro</title>
+    <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onCvLoaded();"></script>
     <style>
         :root { --green: #0f0; --bg: #000; }
-        body { 
-            margin: 0; background: var(--bg); color: var(--green); 
-            font-family: 'Courier New', monospace; 
-            height: 100vh; display: flex; flex-direction: column;
-        }
-        #view-port { 
-            position: relative; flex: 1; overflow: hidden; 
-            display: flex; justify-content: center; align-items: center;
-        }
-        video, canvas { 
-            position: absolute; width: 100%; height: 100%; 
-            object-fit: contain; /* Чтобы не было растяжений */
-        }
-        .ui-panel { 
-            background: #0a0a0a; border-top: 1px solid var(--green);
-            padding: 15px; padding-bottom: calc(15px + env(safe-area-inset-bottom));
-            display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-        }
-        button { 
-            background: transparent; color: var(--green); 
-            border: 1px solid var(--green); padding: 12px; 
-            font-size: 12px; text-transform: uppercase;
-        }
-        #res { 
-            grid-column: span 2; font-size: 24px; text-align: center; 
-            border: 1px dashed var(--green); margin-bottom: 5px; padding: 5px;
-        }
-        #status { 
-            position: absolute; top: 10px; left: 10px; z-index: 10;
-            background: rgba(0,0,0,0.7); font-size: 10px; padding: 4px;
-        }
+        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; }
+        #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; }
+        video, canvas { position: absolute; width: 100%; height: 100%; object-fit: contain; }
+        .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 15px; padding-bottom: calc(15px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        button { background: transparent; color: var(--green); border: 1px solid var(--green); padding: 15px; font-size: 12px; text-transform: uppercase; opacity: 0.5; }
+        button.ready { opacity: 1; border-width: 2px; }
+        #res { grid-column: span 2; font-size: 22px; text-align: center; border: 1px dashed var(--green); margin-bottom: 5px; padding: 5px; }
+        #status { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,0,0,0.8); padding: 5px; font-size: 10px; }
     </style>
 </head>
 <body>
 
-<div id="status">CV: LOADING...</div>
+<div id="status">CV: ЗАГРУЗКА ЯДРА...</div>
 
-<div id="view-port">
+<div id="view">
     <video id="v" playsinline muted autoplay></video>
     <canvas id="c"></canvas>
 </div>
 
-<div class="ui-panel">
+<div class="ui">
     <div id="res">--- MM</div>
-    <button onclick="start()">1. КАМЕРА</button>
-    <button onclick="detectEdges()">2. АНАЛИЗ ГРАНИЦ</button>
+    <button id="btn-start" onclick="startCamera()">1. КАМЕРА</button>
+    <button id="btn-cv" onclick="toggleCV()">2. АНАЛИЗ ГРАНИЦ</button>
 </div>
 
 <script>
-    let stream, video, canvas, ctx;
+    let video, canvas, ctx, src, dst, cap;
+    let cvLoaded = false;
     let isProcessing = false;
 
-    function cvReady() { document.getElementById('status').innerText = "CV: ENGINE READY"; }
+    function onCvLoaded() {
+        cvLoaded = true;
+        document.getElementById('status').innerText = "CV: ЯДРО ЗАГРУЖЕНО";
+        document.getElementById('btn-cv').classList.add('ready');
+    }
 
-    async function start() {
+    async function startCamera() {
         video = document.getElementById('v');
         canvas = document.getElementById('c');
         ctx = canvas.getContext('2d');
 
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment', aspectRatio: 1.777 } 
-            });
-            video.srcObject = stream;
-            document.getElementById('status').innerText = "STREAM: ACTIVE (16:9)";
-            
-            // Настройка размера холста под поток
-            video.onloadedmetadata = () => {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-            };
-        } catch (e) { alert("Ошибка камеры: " + e); }
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment', aspectRatio: 1.777 } 
+        });
+        video.srcObject = stream;
+        document.getElementById('btn-start').classList.add('ready');
     }
 
-    function detectEdges() {
-        if (!cv || !video) return;
+    function toggleCV() {
+        if (!cvLoaded) {
+            alert("Подождите, OpenCV еще грузится...");
+            return;
+        }
         isProcessing = !isProcessing;
-        if (isProcessing) render();
+        if (isProcessing) {
+            // Инициализация матриц OpenCV один раз при старте
+            src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+            dst = new cv.Mat();
+            cap = new cv.VideoCapture(video);
+            document.getElementById('status').innerText = "CV: АНАЛИЗ АКТИВЕН";
+            requestAnimationFrame(processFrame);
+        } else {
+            document.getElementById('status').innerText = "CV: ПРИОСТАНОВЛЕНО";
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
     }
 
-    function render() {
+    function processFrame() {
         if (!isProcessing) return;
-        
-        // Магия OpenCV: захват кадра и поиск краев
-        let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-        let dst = new cv.Mat();
-        let cap = new cv.VideoCapture(video);
-        
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
         cap.read(src);
         cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-        cv.Canny(dst, dst, 50, 150, 3); // Детектор Кэнни
+        // Детектор Кэнни: выделяет четкие перепады контраста (границы объектов)
+        cv.Canny(dst, dst, 50, 150, 3);
         
-        cv.imshow('c', dst); // Вывод ч/б карты границ
+        cv.imshow('c', dst);
         
-        src.delete(); dst.delete();
-        if (isProcessing) requestAnimationFrame(render);
+        requestAnimationFrame(processFrame);
     }
 </script>
 </body>
