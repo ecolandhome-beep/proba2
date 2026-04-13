@@ -3,150 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>MI-AI Measure Pro | iPhone 13 Edition</title>
+    <title>MI-AI: Metric Engine v0.2</title>
+    <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady();"></script>
     <style>
-        /* Инженерный интерфейс: Контрастный и строгий */
-        body {
-            margin: 0;
-            padding: 0;
-            background-color: #000;
-            color: #00ff00; /* Neon Green */
-            font-family: 'Courier New', Courier, monospace;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-        }
-
-        #header {
-            padding: 10px;
-            font-size: 14px;
-            border-bottom: 1px solid #00ff00;
-            text-align: center;
-            background: #0a0a0a;
-        }
-
-        #viewport-container {
-            position: relative;
-            flex-grow: 1;
-            background: #111;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            overflow: hidden;
-        }
-
-        video {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        /* Сетка поверх видео для визуальной калибровки */
-        #overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-            background-image: 
-                linear-gradient(rgba(0, 255, 0, 0.1) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0, 255, 0, 0.1) 1px, transparent 1px);
-            background-size: 40px 40px;
-        }
-
-        .controls {
-            padding: 20px;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            background: #000;
-            border-top: 2px solid #00ff00;
-        }
-
-        button {
-            background: #000;
-            color: #00ff00;
-            border: 2px solid #00ff00;
-            padding: 15px;
-            font-size: 14px;
-            font-weight: bold;
-            font-family: inherit;
-            text-transform: uppercase;
-            cursor: pointer;
-        }
-
-        button:active {
-            background: #00ff00;
-            color: #000;
-        }
-
-        #log {
-            position: absolute;
-            bottom: 10px;
-            left: 10px;
-            font-size: 10px;
-            background: rgba(0, 0, 0, 0.8);
-            padding: 5px;
-            pointer-events: none;
-        }
+        body { margin: 0; background: #000; color: #0f0; font-family: monospace; overflow: hidden; }
+        #container { position: relative; width: 100vw; height: 75vh; }
+        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+        .controls { height: 25vh; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 15px; background: #0a0a0a; border-top: 1px solid #0f0; }
+        button { background: #000; color: #0f0; border: 1px solid #0f0; font-family: inherit; font-size: 12px; text-transform: uppercase; }
+        button:active { background: #0f0; color: #000; }
+        #info { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); font-size: 10px; padding: 5px; z-index: 10; }
+        .marker { position: absolute; width: 30px; height: 30px; border: 2px solid #f00; border-radius: 50%; transform: translate(-15px, -15px); z-index: 20; touch-action: none; }
+        .marker::after { content: ''; position: absolute; top: 14px; left: 0; width: 30px; height: 2px; background: #f00; }
+        .marker::before { content: ''; position: absolute; left: 14px; top: 0; width: 2px; height: 30px; background: #f00; }
     </style>
 </head>
 <body>
 
-    <div id="header">MI-AI: МОДУЛЬ МЕТРИЧЕСКОЙ ВЕРИФИКАЦИИ V0.1</div>
+<div id="info">CV STATUS: LOADING...<br>SCALE: NOT CALIBRATED</div>
 
-    <div id="viewport-container">
-        <video id="v" playsinline muted autoplay></video>
-        <div id="overlay"></div>
-        <div id="log">СТАТУС: СИСТЕМА ГОТОВА</div>
-    </div>
+<div id="container">
+    <video id="video" playsinline muted></video>
+    <canvas id="canvasOutput"></canvas>
+    
+    <div id="pt1" class="marker" style="top: 40%; left: 30%;"></div>
+    <div id="pt2" class="marker" style="top: 40%; left: 70%;"></div>
+</div>
 
-    <div class="controls">
-        <button onclick="initCamera()">ЗАПУСК КАМЕРЫ</button>
-        <button onclick="processCalibration()">КАЛИБРОВКА (ПАЧКА)</button>
-    </div>
+<div class="controls">
+    <button onclick="startCamera()">1. СТАРТ КАМЕРЫ</button>
+    <button onclick="calibrateByObject()">2. КАЛИБРОВКА (88мм)</button>
+    <button onclick="measure()">3. ЗАМЕРИТЬ ДИСТАНЦИЮ</button>
+    <div id="result" style="grid-column: span 2; text-align: center; font-size: 18px; border: 1px dashed #0f0; padding: 5px;">--- mm</div>
+</div>
 
-    <script>
-        const video = document.getElementById('v');
-        const log = document.getElementById('log');
+<script>
+    let pxlPerMm = 0;
+    const pt1 = document.getElementById('pt1');
+    const pt2 = document.getElementById('pt2');
 
-        async function initCamera() {
-            log.innerText = "СТАТУС: ЗАПРОС ПЕРИФЕРИИ...";
-            
-            const constraints = {
-                video: {
-                    facingMode: 'environment', // Задняя камера
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 }
-                },
-                audio: false
-            };
+    function onOpenCvReady() {
+        document.getElementById('info').innerHTML = "CV STATUS: READY (OpenCV.js)<br>SCALE: NOT CALIBRATED";
+    }
 
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                video.srcObject = stream;
-                
-                // Для iOS принудительно запускаем play после получения потока
-                video.onloadedmetadata = () => {
-                    video.play();
-                    log.innerText = "СТАТУС: ОПТИКА АКТИВНА (IPHONE 13)";
-                };
-            } catch (err) {
-                log.innerText = "ОШИБКА: " + err.message;
-                console.error("Camera error:", err);
-            }
-        }
+    async function startCamera() {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+        document.getElementById('video').srcObject = stream;
+        document.getElementById('video').play();
+    }
 
-        function processCalibration() {
-            log.innerText = "СТАТУС: АНАЛИЗ ГЕОМЕТРИИ ОБЪЕКТА...";
-            
-            // Здесь в следующей итерации добавим OpenCV.js логику
-            setTimeout(() => {
-                log.innerText = "СТАТУС: КАЛИБРОВКА ЗАВЕРШЕНА. ОШИБКА < 2%";
-            }, 1500);
-        }
-    </script>
+    // Логика перетаскивания маркеров (Drag & Drop для тачскрина)
+    function makeDraggable(el) {
+        el.addEventListener('touchmove', (e) => {
+            const touch = e.touches[0];
+            el.style.left = touch.clientX + 'px';
+            el.style.top = touch.clientY + 'px';
+            measure(); // Пересчет при движении
+        });
+    }
+    makeDraggable(pt1);
+    makeDraggable(pt2);
+
+    function calibrateByObject() {
+        // Упрощенная логика: берем текущее расстояние между точками за 85мм (стандарт пачки)
+        const dx = parseFloat(pt1.style.left) - parseFloat(pt2.style.left);
+        const dy = parseFloat(pt1.style.top) - parseFloat(pt2.style.top);
+        const distancePxl = Math.sqrt(dx*dx + dy*dy);
+        
+        pxlPerMm = distancePxl / 85; // 85мм - по замерам
+        document.getElementById('info').innerHTML = `CV STATUS: ACTIVE<br>SCALE: ${pxlPerMm.toFixed(2)} pxl/mm`;
+        alert("Откалибровано по пачке (85мм между метками)");
+    }
+
+    function measure() {
+        if (pxlPerMm === 0) return;
+        const dx = parseFloat(pt1.style.left) - parseFloat(pt2.style.left);
+        const dy = parseFloat(pt1.style.top) - parseFloat(pt2.style.top);
+        const distancePxl = Math.sqrt(dx*dx + dy*dy);
+        const distanceMm = distancePxl / pxlPerMm;
+        
+        document.getElementById('result').innerText = distanceMm.toFixed(1) + " MM";
+    }
+</script>
+
 </body>
 </html>
