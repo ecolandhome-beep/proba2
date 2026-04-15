@@ -1,48 +1,135 @@
-function analyze() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-    const size = 200;
-    const xS = (canvas.width - size) / 2;
-    const yS = (canvas.height - size) / 2;
-    
-    // Алгоритм поиска углов квадрата
-    const imgData = ctx.getImageData(xS, yS, size, size);
-    const d = imgData.data;
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>MI-AI: Marker Detector</title>
+    <style>
+        :root { --green: #0f0; --bg: #000; }
+        body { 
+            margin: 0; background: var(--bg); color: var(--green); 
+            font-family: 'Courier New', monospace; height: 100vh; 
+            display: flex; flex-direction: column; overflow: hidden; 
+        }
+        #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; background: #111; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+        canvas { position: absolute; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
+        
+        #aim { 
+            position: absolute; width: 220px; height: 220px; 
+            border: 1px dashed rgba(0,255,0,0.5); z-index: 10;
+        }
 
-    let points = [];
-    // Простой детектор углов для поиска границ маркера
-    for (let i = 0; i < d.length; i += 16) {
-        const b = (d[i] + d[i+1] + d[i+2]) / 3;
-        if (b < 50) { // Ищем черную рамку маркера
-            const px = (i / 4) % size;
-            const py = Math.floor((i / 4) / size);
-            points.push({x: px, y: py});
+        .ui { 
+            background: #0a0a0a; border-top: 1px solid var(--green); 
+            padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom));
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100;
+        }
+        #display { 
+            grid-column: span 2; text-align: center; padding: 15px; 
+            border: 1px solid var(--green); background: #001500; margin-bottom: 10px; 
+        }
+        #res-val { font-size: 24px; font-weight: bold; }
+        #status { font-size: 10px; text-transform: uppercase; margin-bottom: 5px; opacity: 0.7; }
+        
+        button { 
+            background: #000; color: var(--green); border: 2px solid var(--green); 
+            padding: 18px; font-family: inherit; font-weight: bold; font-size: 14px;
+        }
+        button:active { background: var(--green); color: #000; }
+    </style>
+</head>
+<body>
+
+<div id="view">
+    <video id="v" playsinline muted autoplay></video>
+    <div id="aim"></div>
+    <canvas id="c"></canvas>
+</div>
+
+<div class="ui">
+    <div id="display">
+        <div id="status">ОЖИДАНИЕ МАРКЕРА</div>
+        <div id="res-val">READY</div>
+    </div>
+    <button onclick="initCamera()">1. ВКЛЮЧИТЬ КАМЕРУ</button>
+    <button onclick="analyzeMarker()">2. ЗАХВАТ МАРКЕРА</button>
+</div>
+
+<script>
+    const video = document.getElementById('v');
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const resVal = document.getElementById('res-val');
+    const statusText = document.getElementById('status');
+
+    async function initCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: { ideal: 1280 } } 
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                statusText.innerText = "Камера готова. Наведите на экран";
+            };
+        } catch (e) { alert("Ошибка доступа: " + e); }
+    }
+
+    function analyzeMarker() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        const size = 220; // Размер зоны поиска
+        const xStart = (canvas.width - size) / 2;
+        const yStart = (canvas.height - size) / 2;
+        
+        const imgData = ctx.getImageData(xStart, yStart, size, size);
+        const data = imgData.data;
+
+        let darkPixels = [];
+        
+        // Сканируем зону на наличие черных пикселей маркера
+        for (let y = 0; y < size; y += 2) {
+            for (let x = 0; x < size; x += 2) {
+                const i = (y * size + x) * 4;
+                const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
+                
+                if (brightness < 60) { // Порог черного
+                    darkPixels.push({x: x, y: y});
+                }
+            }
+        }
+
+        if (darkPixels.length > 50) {
+            const minX = Math.min(...darkPixels.map(p => p.x));
+            const maxX = Math.max(...darkPixels.map(p => p.x));
+            const minY = Math.min(...darkPixels.map(p => p.y));
+            const maxY = Math.max(...darkPixels.map(p => p.y));
+
+            const w = maxX - minX;
+            const h = maxY - minY;
+
+            // Рисуем рамку захвата
+            ctx.strokeStyle = "#0f0";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(xStart + minX, yStart + minY, w, h);
+
+            // Рисуем виртуальные оси (эмуляция 3D)
+            ctx.beginPath();
+            ctx.moveTo(xStart + minX + w/2, yStart + minY + h/2);
+            ctx.lineTo(xStart + minX + w/2, yStart + minY - 30);
+            ctx.strokeStyle = "#00f"; // Синяя ось вверх
+            ctx.stroke();
+
+            statusText.innerText = "МАРКЕР ОБНАРУЖЕН";
+            resVal.innerText = "PITCH/ROLL ACTIVE";
+        } else {
+            statusText.innerText = "МАРКЕР НЕ НАЙДЕН";
+            resVal.innerText = "SEARCHING...";
         }
     }
-
-    if (points.length > 100) {
-        // Вычисляем охватывающий прямоугольник (Bounding Box)
-        const minX = Math.min(...points.map(p => p.x));
-        const maxX = Math.max(...points.map(p => p.x));
-        const minY = Math.min(...points.map(p => p.y));
-        const maxY = Math.max(...points.map(p => p.y));
-
-        // РИСУЕМ 3D-ОСИ (Эмуляция)
-        ctx.strokeStyle = "#0f0";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(xS + minX, yS + minY, maxX - minX, maxY - minY);
-        
-        // Рисуем "ось Z" (показываем, что видим наклон)
-        ctx.beginPath();
-        ctx.moveTo(xS + (minX + maxX)/2, yS + (minY + maxY)/2);
-        ctx.lineTo(xS + (minX + maxX)/2, yS + minY - 20);
-        ctx.strokeStyle = "blue"; 
-        ctx.stroke();
-
-        statusText.innerText = "МАРКЕР ЗАХВАЧЕН. СИСТЕМА ВИДИТ УГОЛ.";
-        resVal.innerText = "READY FOR 3D";
-    } else {
-        statusText.innerText = "ПОИСК МАРКЕРА...";
-    }
-}
+</script>
+</body>
+</html>
