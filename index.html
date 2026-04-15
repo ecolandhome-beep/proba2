@@ -3,49 +3,63 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Edge Detector 24mm</title>
+    <title>MI-AI: Precision Tool</title>
     <style>
         :root { --green: #0f0; --bg: #000; }
-        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-        #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; }
-        video { width: 100%; height: 100%; object-fit: cover; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
-        
-        #target-box { 
-            position: absolute; width: 200px; height: 200px; 
-            border: 1px dashed rgba(0,255,0,0.3); z-index: 10;
+        body { 
+            margin: 0; background: var(--bg); color: var(--green); 
+            font-family: 'Courier New', monospace; height: 100vh; 
+            display: flex; flex-direction: column; overflow: hidden; 
         }
+        #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; background: #111; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+        canvas { position: absolute; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
+        
+        /* Зона захвата */
+        #aim { 
+            position: absolute; width: 180px; height: 180px; 
+            border: 1px dashed var(--green); z-index: 10;
+            display: flex; justify-content: center; align-items: center;
+        }
+        #aim::before { content: ''; width: 20px; height: 1px; background: var(--green); position: absolute; }
+        #aim::after { content: ''; width: 1px; height: 20px; background: var(--green); position: absolute; }
 
         .ui { 
-    background: #0a0a0a; 
-    border-top: 1px solid var(--green); 
-    padding: 20px; 
-    
-    /* ГЛАВНЫЙ ФИКС: добавляем системный отступ снизу для Safari */
-    padding-bottom: calc(20px + env(safe-area-inset-bottom));
-    
-    display: grid; 
-    grid-template-columns: 1fr 1fr; 
-    gap: 10px; 
-    z-index: 100;
-}
+            background: #0a0a0a; border-top: 1px solid var(--green); 
+            padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom));
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100;
+        }
+        #display { 
+            grid-column: span 2; text-align: center; padding: 15px; 
+            border: 1px solid var(--green); background: #001500; margin-bottom: 10px; 
+        }
+        #res-val { font-size: 32px; font-weight: bold; }
+        #status { font-size: 10px; text-transform: uppercase; margin-bottom: 5px; opacity: 0.7; }
+        
+        button { 
+            background: #000; color: var(--green); border: 2px solid var(--green); 
+            padding: 15px; font-family: inherit; font-weight: bold; cursor: pointer;
+        }
+        button:active { background: var(--green); color: #000; }
+        .btn-cal { border-color: #ff0; color: #ff0; }
     </style>
 </head>
 <body>
 
 <div id="view">
     <video id="v" playsinline muted autoplay></video>
-    <div id="target-box"></div>
+    <div id="aim"></div>
     <canvas id="c"></canvas>
 </div>
 
 <div class="ui">
-    <div id="res-panel">
-        <div id="status">ГОТОВ К ЗАХВАТУ</div>
-        <div id="res-val">---</div>
+    <div id="display">
+        <div id="status">Система готова</div>
+        <div id="res-val">0.00 MM</div>
     </div>
-    <button onclick="startCam()">1. КАМЕРА</button>
-    <button onclick="analyze()">2. АНАЛИЗ</button>
+    <button onclick="initCamera()">1. КАМЕРА</button>
+    <button class="btn-cal" onclick="doAction('cal')">2. ЭТАЛОН (24мм)</button>
+    <button style="grid-column: span 2;" onclick="doAction('mes')">3. ЗАМЕРИТЬ ОБЪЕКТ</button>
 </div>
 
 <script>
@@ -53,71 +67,71 @@
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const resVal = document.getElementById('res-val');
-    const status = document.getElementById('status');
+    const statusText = document.getElementById('status');
 
-    let scale = 0.18; // Предварительный масштаб (мм на пиксель)
+    let mmPerPixel = 0; // Наш золотой коэффициент
 
-    async function startCam() {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment', width: { ideal: 1280 } } 
-        });
-        video.srcObject = stream;
-        video.onloadedmetadata = () => {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-        };
+    async function initCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: { ideal: 1280 } } 
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                statusText.innerText = "Сенсор активен. Поместите гайку в прицел";
+            };
+        } catch (e) { alert("Ошибка камеры: " + e); }
     }
 
-    function analyze() {
+    function doAction(type) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        const size = 200;
-        const startX = (canvas.width - size) / 2;
-        const startY = (canvas.height - size) / 2;
-        
-        const imgData = ctx.getImageData(startX, startY, size, size);
+        const size = 180;
+        const xStart = (canvas.width - size) / 2;
+        const yStart = (canvas.height - size) / 2;
+        const imgData = ctx.getImageData(xStart, yStart, size, size);
         const data = imgData.data;
 
-        // Детекция границ объекта (поиск крайних точек)
-        let minX = size, maxX = 0, minY = size, maxY = 0;
-        let found = false;
-
+        // Поиск границ объекта внутри прицела
+        let minX = size, maxX = 0;
         for (let y = 0; y < size; y++) {
             for (let x = 0; x < size; x++) {
                 const i = (y * size + x) * 4;
-                const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
-                
-                // Если пиксель светлее фона (металл/монета)
-                if (brightness > 130) { 
+                const bright = (data[i] + data[i+1] + data[i+2]) / 3;
+                if (bright > 110) { // Порог детекции металла
                     if (x < minX) minX = x;
                     if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                    found = true;
                 }
             }
         }
 
-        if (found) {
-            const widthPx = maxX - minX;
-            const heightPx = maxY - minY;
-            const objectSizePx = Math.max(widthPx, heightPx);
+        const objectWidthPx = maxX - minX;
 
-            // Отрисовка "динамической рамки" захвата
-            ctx.strokeStyle = "red";
-            ctx.lineWidth = 4;
-            ctx.strokeRect(startX + minX, startY + minY, widthPx, heightPx);
+        if (objectWidthPx < 10) {
+            statusText.innerText = "Ошибка: Объект не найден";
+            return;
+        }
 
-            // Если мы считаем, что гайка (24мм) должна быть около 130-140 пикселей
-            // Вычисляем размер текущего объекта
-            const measuredMm = objectSizePx * scale;
-            
-            status.innerText = "ОБЪЕКТ ЗАХВАЧЕН";
-            resVal.innerText = measuredMm.toFixed(2) + " MM";
+        // Отрисовка рамки захвата для визуального контроля
+        ctx.strokeStyle = (type === 'cal') ? "#ff0" : "#0f0";
+        ctx.lineWidth = 5;
+        ctx.strokeRect(xStart + minX, yStart, objectWidthPx, size);
+
+        if (type === 'cal') {
+            mmPerPixel = 24 / objectWidthPx;
+            statusText.innerText = "Калибровка завершена (24мм)";
+            resVal.innerText = "24.00 MM";
         } else {
-            status.innerText = "ОБЪЕКТ НЕ НАЙДЕН";
-            resVal.innerText = "---";
+            if (mmPerPixel === 0) {
+                statusText.innerText = "Сначала выполните калибровку!";
+                return;
+            }
+            const result = objectWidthPx * mmPerPixel;
+            statusText.innerText = "Замер выполнен";
+            resVal.innerText = result.toFixed(2) + " MM";
         }
     }
 </script>
