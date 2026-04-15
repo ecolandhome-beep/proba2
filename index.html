@@ -16,10 +16,19 @@
             border: 1px dashed rgba(0,255,0,0.3); z-index: 10;
         }
 
-        .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100;}
-        #res-panel { grid-column: span 2; text-align: center; padding: 10px; border: 1px solid var(--green); background: #111; min-height: 60px; }
-        #res-val { font-size: 24px; font-weight: bold; color: var(--green); }
-        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
+        .ui { 
+    background: #0a0a0a; 
+    border-top: 1px solid var(--green); 
+    padding: 20px; 
+    
+    /* ГЛАВНЫЙ ФИКС: добавляем системный отступ снизу для Safari */
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+    
+    display: grid; 
+    grid-template-columns: 1fr 1fr; 
+    gap: 10px; 
+    z-index: 100;
+}
     </style>
 </head>
 <body>
