@@ -3,24 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Real-Time Analyzer</title>
+    <title>MI-AI: Edge Detector 24mm</title>
     <style>
         :root { --green: #0f0; --bg: #000; }
         body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
         #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; }
         video { width: 100%; height: 100%; object-fit: cover; }
-        canvas { position: absolute; z-index: 5; pointer-events: none; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
         
-        /* Визуальный прицел */
         #target-box { 
-            position: absolute; width: 150px; height: 150px; 
-            border: 1px dashed rgba(0,255,0,0.5); z-index: 10;
+            position: absolute; width: 200px; height: 200px; 
+            border: 1px dashed rgba(0,255,0,0.3); z-index: 10;
         }
 
         .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100;}
-        #res-panel { grid-column: span 2; text-align: center; padding: 10px; border: 1px solid var(--green); background: #111; }
-        #res-val { font-size: 28px; font-weight: bold; color: var(--green); }
-        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; text-transform: uppercase; }
+        #res-panel { grid-column: span 2; text-align: center; padding: 10px; border: 1px solid var(--green); background: #111; min-height: 60px; }
+        #res-val { font-size: 24px; font-weight: bold; color: var(--green); }
+        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -33,11 +32,11 @@
 
 <div class="ui">
     <div id="res-panel">
-        <div id="status">ОЖИДАНИЕ ОБЪЕКТА...</div>
+        <div id="status">ГОТОВ К ЗАХВАТУ</div>
         <div id="res-val">---</div>
     </div>
     <button onclick="startCam()">1. КАМЕРА</button>
-    <button onclick="measure()">2. АНАЛИЗ</button>
+    <button onclick="analyze()">2. АНАЛИЗ</button>
 </div>
 
 <script>
@@ -47,9 +46,11 @@
     const resVal = document.getElementById('res-val');
     const status = document.getElementById('status');
 
+    let scale = 0.18; // Предварительный масштаб (мм на пиксель)
+
     async function startCam() {
         const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment', width: 640 } 
+            video: { facingMode: 'environment', width: { ideal: 1280 } } 
         });
         video.srcObject = stream;
         video.onloadedmetadata = () => {
@@ -58,41 +59,55 @@
         };
     }
 
-    function measure() {
-        // Отрисовываем текущий кадр на невидимый холст
+    function analyze() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        // Берем центр кадра (ROI)
-        const size = 150;
-        const x = (canvas.width - size) / 2;
-        const y = (canvas.height - size) / 2;
-        const imgData = ctx.getImageData(x, y, size, size);
+        const size = 200;
+        const startX = (canvas.width - size) / 2;
+        const startY = (canvas.height - size) / 2;
+        
+        const imgData = ctx.getImageData(startX, startY, size, size);
         const data = imgData.data;
 
-        let left = size, right = 0;
+        // Детекция границ объекта (поиск крайних точек)
+        let minX = size, maxX = 0, minY = size, maxY = 0;
+        let found = false;
 
-        // Ищем самый левый и самый правый светлый пиксель (гайку)
-        for (let i = 0; i < data.length; i += 4) {
-            const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
-            if (brightness > 120) { // Порог яркости для металла
-                const pxIdx = (i / 4) % size;
-                if (pxIdx < left) left = pxIdx;
-                if (pxIdx > right) right = pxIdx;
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                const i = (y * size + x) * 4;
+                const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
+                
+                // Если пиксель светлее фона (металл/монета)
+                if (brightness > 130) { 
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                    found = true;
+                }
             }
         }
 
-        const detectedWidthPxl = right - left;
+        if (found) {
+            const widthPx = maxX - minX;
+            const heightPx = maxY - minY;
+            const objectSizePx = Math.max(widthPx, heightPx);
 
-        if (detectedWidthPxl > 10) {
-            // Если мы договорились, что гайка = 24мм, а она заняла detectedWidthPxl
-            // То в этом масштабе монета (которая меньше) покажет меньшее число
-            const currentScale = 24 / 130; // 130 - это условный размер гайки в рамке
-            const finalSize = detectedWidthPxl * currentScale;
+            // Отрисовка "динамической рамки" захвата
+            ctx.strokeStyle = "red";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(startX + minX, startY + minY, widthPx, heightPx);
+
+            // Если мы считаем, что гайка (24мм) должна быть около 130-140 пикселей
+            // Вычисляем размер текущего объекта
+            const measuredMm = objectSizePx * scale;
             
-            status.innerText = "ОБЪЕКТ ОБНАРУЖЕН";
-            resVal.innerText = finalSize.toFixed(2) + " MM";
+            status.innerText = "ОБЪЕКТ ЗАХВАЧЕН";
+            resVal.innerText = measuredMm.toFixed(2) + " MM";
         } else {
-            status.innerText = "ПУСТО В РАМКЕ";
+            status.innerText = "ОБЪЕКТ НЕ НАЙДЕН";
             resVal.innerText = "---";
         }
     }
