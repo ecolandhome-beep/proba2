@@ -3,17 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Logic Anchor</title>
+    <title>MI-AI: Auto-Photo Fix</title>
     <style>
-        :root { --green: #0f0; --bg: #000; --blue: #007bff; }
+        :root { --green: #0f0; --bg: #000; }
         body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
         #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; background: #111; }
         video, canvas { position: absolute; width: 100%; height: 100%; object-fit: contain; }
         .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100; }
         #display { grid-column: span 2; text-align: center; padding: 15px; border: 1px solid var(--green); background: #001500; }
-        #res-val { font-size: 28px; font-weight: bold; color: white; }
-        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
+        #res-val { font-size: 24px; font-weight: bold; color: white; }
+        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; font-family: inherit; }
         button:active { background: var(--green); color: #000; }
+        #log { position: absolute; top: 10px; left: 10px; font-size: 10px; z-index: 200; background: rgba(0,0,0,0.5); }
     </style>
 </head>
 <body>
@@ -21,15 +22,16 @@
 <div id="view">
     <video id="v" playsinline muted autoplay></video>
     <canvas id="c"></canvas>
+    <div id="log"></div>
 </div>
 
 <div class="ui">
     <div id="display">
-        <div id="status">ПОИСК СИНЕГО ЭТАЛОНА (40x20)</div>
+        <div id="status">ФОТОФИКСАЦИЯ АКТИВИРОВАНА</div>
         <div id="res-val">---</div>
     </div>
     <button onclick="initCamera()">1. СТАРТ</button>
-    <button onclick="findBlueAnchor()">2. ЗАМЕР ПО ЯКОРЮ</button>
+    <button onclick="takeMeasureAndPhoto()">2. ЗАМЕР + ФОТО</button>
 </div>
 
 <script>
@@ -37,31 +39,33 @@
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const resVal = document.getElementById('res-val');
-
-    // БИБЛИОТЕКА ЭТАЛОНОВ (Ваш хэш)
-    const anchors = {
-        blueEraser: { w: 40, h: 20, ratio: 2.0, color: 'blue' }
-    };
+    const log = document.getElementById('log');
 
     async function initCamera() {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        video.srcObject = stream;
-        video.onloadedmetadata = () => { canvas.width = video.videoWidth; canvas.height = video.videoHeight; };
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: { ideal: 1920 } } 
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                log.innerText = `Разрешение: ${canvas.width}x${canvas.height}`;
+            };
+        } catch (e) { alert("Ошибка камеры: " + e); }
     }
 
-    function findBlueAnchor() {
+    function takeMeasureAndPhoto() {
+        // 1. Отрисовка текущего кадра
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // 2. Логика поиска синего якоря (как в прошлом тесте)
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const d = imgData.data;
-
         let points = [];
-        for (let i = 0; i < d.length; i += 16) {
-            let r = d[i], g = d[i+1], b = d[i+2];
-            // Ищем синий цвет (высокий B при низких R и G)
-            if (b > 100 && b > r * 1.5 && b > g * 1.5) {
-                let x = (i/4) % canvas.width;
-                let y = Math.floor((i/4) / canvas.width);
-                points.push({x, y});
+        for (let i = 0; i < d.length; i += 32) { // ускоренный шаг
+            if (d[i+2] > 100 && d[i+2] > d[i]*1.5 && d[i+2] > d[i+1]*1.5) {
+                points.push({x: (i/4) % canvas.width, y: Math.floor((i/4) / canvas.width)});
             }
         }
 
@@ -70,26 +74,40 @@
             const maxX = Math.max(...points.map(p => p.x));
             const minY = Math.min(...points.map(p => p.y));
             const maxY = Math.max(...points.map(p => p.y));
-
             const wPx = maxX - minX;
             const hPx = maxY - minY;
-            const currentRatio = wPx / hPx;
 
-            // Проверка по Хэшу соотношений (допуск 20% на наклон)
-            if (currentRatio > 1.4 && currentRatio < 2.6) {
-                ctx.strokeStyle = "cyan";
-                ctx.lineWidth = 5;
-                ctx.strokeRect(minX, minY, wPx, hPx);
+            // Накладываем графику прямо на холст для скриншота
+            ctx.strokeStyle = "#0f0";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(minX, minY, wPx, hPx);
+            
+            // Добавляем текстовую метку на фото
+            ctx.fillStyle = "#0f0";
+            ctx.font = "bold 40px monospace";
+            const label = `L: 40.00mm | H: ${(hPx * (40/wPx)).toFixed(2)}mm`;
+            ctx.fillText(label, minX, minY - 10);
+            
+            // Штамп времени (для ПТО)
+            ctx.font = "20px monospace";
+            ctx.fillText(new Date().toLocaleString(), 20, canvas.height - 20);
 
-                // Расчет: если длинная сторона (wPx) = 40мм
-                const mmPerPx = 40 / wPx;
-                resVal.innerText = `L: 40.00 | H: ${(hPx * mmPerPx).toFixed(2)} MM`;
-                document.getElementById('status').innerText = "ЭТАЛОН ПОДТВЕРЖДЕН";
-            } else {
-                document.getElementById('status').innerText = "ОШИБКА ПРОПОРЦИЙ";
-                resVal.innerText = "CHECK RATIO";
-            }
+            resVal.innerText = label;
+
+            // 3. АВТО-СОХРАНЕНИЕ
+            saveScreenshot();
+        } else {
+            alert("Синий эталон не найден в кадре!");
         }
+    }
+
+    function saveScreenshot() {
+        const link = document.createElement('a');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        link.download = `MI-AI_Measure_${timestamp}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        document.getElementById('status').innerText = "ФАЙЛ СОХРАНЕН";
     }
 </script>
 </body>
