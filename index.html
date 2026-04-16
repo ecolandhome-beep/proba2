@@ -3,106 +3,98 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: PMP Edition</title>
+    <title>MI-AI: Master Inspect</title>
     <style>
         :root { --green: #0f0; --bg: #000; }
-        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; }
-        #view { position: relative; width: 100%; height: 60vh; background: #111; overflow: hidden; }
+        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; overflow-x: hidden; }
+        #view { position: relative; width: 100%; height: 50vh; background: #111; }
         video, #c { position: absolute; width: 100%; height: 100%; object-fit: contain; }
-        .ui { padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        #display { grid-column: span 2; text-align: center; padding: 15px; border: 1px solid var(--green); background: #001500; }
-        #res-val { font-size: 24px; font-weight: bold; color: white; margin: 5px 0; }
-        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; font-family: inherit; }
-        #preview-area { grid-column: span 2; text-align: center; margin-top: 10px; }
-        #preview-img { max-width: 100%; border: 1px solid #333; display: none; }
-        .hint { font-size: 10px; opacity: 0.6; margin-top: 5px; }
+        .ui { padding: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        #display { grid-column: span 2; text-align: center; padding: 12px; border: 1px solid var(--green); background: #001500; min-height: 60px; }
+        #res-val { font-size: 22px; font-weight: bold; color: white; margin-top: 5px; }
+        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 12px; font-weight: bold; font-family: inherit; font-size: 14px; }
+        #result-preview { grid-column: span 2; margin-top: 10px; text-align: center; }
+        #result-preview img { max-width: 100%; border: 1px solid var(--green); display: none; }
+        .save-tip { font-size: 11px; color: #aaa; margin-top: 5px; display: none; }
     </style>
 </head>
 <body>
 
 <div id="view">
     <video id="v" playsinline muted autoplay></video>
-    <canvas id="c"></canvas>
+    <canvas id="c" style="display:none;"></canvas>
 </div>
 
 <div class="ui">
     <div id="display">
-        <div id="status">ЭТАЛОН: СИНИЙ ЛАСТИК (40x20)</div>
-        <div id="res-val">READY</div>
+        <div id="status">ОЖИДАНИЕ СИНЕГО ЭТАЛОНА</div>
+        <div id="res-val">---</div>
     </div>
-    <button onclick="initCamera()">1. КАМЕРА</button>
-    <button onclick="process()">2. ЗАМЕР</button>
+    <button onclick="init()">1. КАМЕРА</button>
+    <button onclick="measure()">2. ЗАМЕР</button>
     
-    <div id="preview-area">
-        <img id="preview-img">
-        <div id="save-hint" class="hint" style="display:none;">↑ Зажмите фото выше, чтобы сохранить в галерею</div>
+    <div id="result-preview">
+        <img id="out-img">
+        <div class="save-tip" id="tip">↑ Зажмите фото для сохранения в галерею</div>
     </div>
 </div>
 
 <script>
-    const video = document.getElementById('v');
-    const canvas = document.getElementById('c');
-    const ctx = canvas.getContext('2d');
-    const resVal = document.getElementById('res-val');
-    const previewImg = document.getElementById('preview-img');
+    const v = document.getElementById('v');
+    const c = document.getElementById('c');
+    const ctx = c.getContext('2d');
+    const outImg = document.getElementById('out-img');
 
-    async function initCamera() {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment', width: { ideal: 1920 } } 
-        });
-        video.srcObject = stream;
-        video.onloadedmetadata = () => {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-        };
+    async function init() {
+        const s = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', width:1280}});
+        v.srcObject = s;
+        v.onloadedmetadata = () => { c.width = v.videoWidth; c.height = v.videoHeight; };
     }
 
-    function process() {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const d = imgData.data;
-        let points = [];
-
-        // Детекция синего цвета
-        for (let i = 0; i < d.length; i += 32) {
-            if (d[i+2] > 110 && d[i+2] > d[i]*1.6 && d[i+2] > d[i+1]*1.6) {
-                points.push({x: (i/4) % canvas.width, y: Math.floor((i/4) / canvas.width)});
+    function measure() {
+        ctx.drawImage(v, 0, 0, c.width, c.height);
+        const data = ctx.getImageData(0,0,c.width,c.height).data;
+        let pts = [];
+        
+        // Поиск синего цвета (усиленный порог)
+        for(let i=0; i<data.length; i+=16) {
+            if(data[i+2]>120 && data[i+2]>data[i]*1.8 && data[i+2]>data[i+1]*1.8) {
+                pts.push({x:(i/4)%c.width, y:Math.floor((i/4)/c.width)});
             }
         }
 
-        if (points.length > 50) {
-            const minX = Math.min(...points.map(p => p.x));
-            const maxX = Math.max(...points.map(p => p.x));
-            const minY = Math.min(...points.map(p => p.y));
-            const maxY = Math.max(...points.map(p => p.y));
-            const wPx = maxX - minX;
-            const hPx = maxY - minY;
+        if(pts.length > 40) {
+            const x1 = Math.min(...pts.map(p=>p.x)), x2 = Math.max(...pts.map(p=>p.x));
+            const y1 = Math.min(...pts.map(p=>p.y)), y2 = Math.max(...pts.map(p=>p.y));
+            const w = x2-x1, h = y2-y1;
+            const ratio = w/h;
 
-            // Отрисовка на холсте для снимка
-            ctx.strokeStyle = "#0f0";
-            ctx.lineWidth = 6;
-            ctx.strokeRect(minX, minY, wPx, hPx);
-            
-            ctx.fillStyle = "#0f0";
-            ctx.font = "bold 45px monospace";
-            const mmPerPx = 40 / wPx;
-            const resultText = `40.00 x ${(hPx * mmPerPx).toFixed(2)} MM`;
-            ctx.fillText(resultText, minX, minY - 20);
-            
-            // Дата и метка MI-AI
-            ctx.font = "25px monospace";
-            ctx.fillText(`MI-AI LOG: ${new Date().toLocaleString()}`, 30, canvas.height - 30);
+            // ПРОВЕРКА ЭТАЛОНА ПО СООТНОШЕНИЮ (от 1.6 до 2.4 для ластика 2:1)
+            if(ratio > 1.6 && ratio < 2.4) {
+                ctx.strokeStyle = '#0f0'; ctx.lineWidth = 5;
+                ctx.strokeRect(x1, y1, w, h);
+                const mmPx = 40/w;
+                const txt = `L: 40.00mm | H: ${(h*mmPx).toFixed(2)}mm`;
+                
+                // Наложение графики
+                ctx.fillStyle = '#0f0'; ctx.font = 'bold 30px Arial';
+                ctx.fillText(txt, x1, y1-15);
+                ctx.font = '15px Arial';
+                ctx.fillText(`MI-AI LOG | ${new Date().toLocaleString()}`, 20, c.height-20);
 
-            resVal.innerText = resultText;
-
-            // Показываем результат как картинку (iOS friendly)
-            previewImg.src = canvas.toDataURL('image/png');
-            previewImg.style.display = 'block';
-            document.getElementById('save-hint').style.display = 'block';
-            document.getElementById('status').innerText = "ЗАМЕР ГОТОВ";
-        } else {
-            alert("Синий объект не найден. Проверьте освещение.");
-        }
+                document.getElementById('res-val').innerText = txt;
+                document.getElementById('status').innerText = "ЭТАЛОН ПОДТВЕРЖДЕН";
+                
+                // Конвертация в картинку для сохранения на iPhone
+                outImg.src = c.toDataURL('image/png');
+                outImg.style.display = 'inline-block';
+                document.getElementById('tip').style.display = 'block';
+            } else {
+                document.getElementById('status').innerText = "ОШИБКА ПРОПОРЦИЙ: " + ratio.toFixed(2);
+                document.getElementById('res-val').innerText = "НЕ ЭТАЛОН";
+                outImg.style.display = 'none';
+            }
+        } else { alert("Синий объект не найден!"); }
     }
 </script>
 </body>
