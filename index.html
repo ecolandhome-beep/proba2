@@ -3,43 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Precision Fix</title>
+    <title>MI-AI: Logic Anchor</title>
     <style>
-        :root { --green: #0f0; --bg: #000; }
-        body { 
-            margin: 0; background: var(--bg); color: var(--green); 
-            font-family: 'Courier New', monospace; height: 100vh; 
-            display: flex; flex-direction: column; overflow: hidden; 
-        }
-        #view { 
-            position: relative; flex: 1; overflow: hidden;
-            display: flex; justify-content: center; align-items: center; 
-        }
-        video { position: absolute; width: 100%; height: 100%; object-fit: contain; }
-        canvas { position: absolute; width: 100%; height: 100%; z-index: 5; pointer-events: none; object-fit: contain; }
-        
-        #aim { 
-            position: absolute; width: 220px; height: 220px; 
-            border: 1px dashed rgba(0,255,0,0.5); z-index: 10;
-            pointer-events: none;
-        }
-
-        .ui { 
-            background: #0a0a0a; border-top: 1px solid var(--green); 
-            padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom));
-            display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100;
-        }
-        #display { 
-            grid-column: span 2; text-align: center; padding: 15px; 
-            border: 1px solid var(--green); background: #001500; margin-bottom: 10px; 
-        }
-        #res-val { font-size: 24px; font-weight: bold; }
-        #status { font-size: 10px; text-transform: uppercase; margin-bottom: 5px; opacity: 0.7; }
-        
-        button { 
-            background: #000; color: var(--green); border: 2px solid var(--green); 
-            padding: 18px; font-family: inherit; font-weight: bold; font-size: 14px;
-        }
+        :root { --green: #0f0; --bg: #000; --blue: #007bff; }
+        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        #view { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; background: #111; }
+        video, canvas { position: absolute; width: 100%; height: 100%; object-fit: contain; }
+        .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; z-index: 100; }
+        #display { grid-column: span 2; text-align: center; padding: 15px; border: 1px solid var(--green); background: #001500; }
+        #res-val { font-size: 28px; font-weight: bold; color: white; }
+        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
         button:active { background: var(--green); color: #000; }
     </style>
 </head>
@@ -48,16 +21,15 @@
 <div id="view">
     <video id="v" playsinline muted autoplay></video>
     <canvas id="c"></canvas>
-    <div id="aim"></div>
 </div>
 
 <div class="ui">
     <div id="display">
-        <div id="status">ГЕОМЕТРИЯ СИНХРОНИЗИРОВАНА</div>
-        <div id="res-val">READY</div>
+        <div id="status">ПОИСК СИНЕГО ЭТАЛОНА (40x20)</div>
+        <div id="res-val">---</div>
     </div>
-    <button onclick="initCamera()">1. СТАРТ КАМЕРЫ</button>
-    <button onclick="analyze()">2. ЗАМЕР</button>
+    <button onclick="initCamera()">1. СТАРТ</button>
+    <button onclick="findBlueAnchor()">2. ЗАМЕР ПО ЯКОРЮ</button>
 </div>
 
 <script>
@@ -65,42 +37,31 @@
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const resVal = document.getElementById('res-val');
-    const statusText = document.getElementById('status');
+
+    // БИБЛИОТЕКА ЭТАЛОНОВ (Ваш хэш)
+    const anchors = {
+        blueEraser: { w: 40, h: 20, ratio: 2.0, color: 'blue' }
+    };
 
     async function initCamera() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment', width: { ideal: 1280 } } 
-            });
-            video.srcObject = stream;
-            video.onloadedmetadata = () => {
-                // Магия: приравниваем размер холста к РЕАЛЬНОМУ видео-потоку
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                statusText.innerText = "Сенсор откалиброван. Искажений нет.";
-            };
-        } catch (e) { alert("Ошибка: " + e); }
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => { canvas.width = video.videoWidth; canvas.height = video.videoHeight; };
     }
 
-    function analyze() {
-        // Рисуем кадр без искажений масштаба
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    function findBlueAnchor() {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // Считаем зону поиска относительно центра видео, а не экрана
-        const searchSize = 300;
-        const xStart = (canvas.width - searchSize) / 2;
-        const yStart = (canvas.height - searchSize) / 2;
-        
-        const imgData = ctx.getImageData(xStart, yStart, searchSize, searchSize);
-        const data = imgData.data;
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const d = imgData.data;
 
         let points = [];
-        for (let y = 0; y < searchSize; y += 2) {
-            for (let x = 0; x < searchSize; x += 2) {
-                const i = (y * searchSize + x) * 4;
-                const bright = (data[i] + data[i+1] + data[i+2]) / 3;
-                if (bright < 60) points.push({x: x, y: y});
+        for (let i = 0; i < d.length; i += 16) {
+            let r = d[i], g = d[i+1], b = d[i+2];
+            // Ищем синий цвет (высокий B при низких R и G)
+            if (b > 100 && b > r * 1.5 && b > g * 1.5) {
+                let x = (i/4) % canvas.width;
+                let y = Math.floor((i/4) / canvas.width);
+                points.push({x, y});
             }
         }
 
@@ -110,26 +71,24 @@
             const minY = Math.min(...points.map(p => p.y));
             const maxY = Math.max(...points.map(p => p.y));
 
-            const w = maxX - minX;
-            const h = maxY - minY;
+            const wPx = maxX - minX;
+            const hPx = maxY - minY;
+            const currentRatio = wPx / hPx;
 
-            // Отрисовка
-            ctx.strokeStyle = "#0f0";
-            ctx.lineWidth = 6;
-            ctx.strokeRect(xStart + minX, yStart + minY, w, h);
+            // Проверка по Хэшу соотношений (допуск 20% на наклон)
+            if (currentRatio > 1.4 && currentRatio < 2.6) {
+                ctx.strokeStyle = "cyan";
+                ctx.lineWidth = 5;
+                ctx.strokeRect(minX, minY, wPx, hPx);
 
-            // Визуальный контроль: рисуем крест в центре захвата
-            ctx.beginPath();
-            ctx.moveTo(xStart + minX + w/2 - 20, yStart + minY + h/2);
-            ctx.lineTo(xStart + minX + w/2 + 20, yStart + minY + h/2);
-            ctx.moveTo(xStart + minX + w/2, yStart + minY + h/2 - 20);
-            ctx.lineTo(xStart + minX + w/2, yStart + minY + h/2 + 20);
-            ctx.stroke();
-
-            statusText.innerText = "ОБЪЕКТ ЗАХВАЧЕН БЕЗ ИСКАЖЕНИЙ";
-            resVal.innerText = w + " x " + h + " PX";
-        } else {
-            statusText.innerText = "ПОИСК...";
+                // Расчет: если длинная сторона (wPx) = 40мм
+                const mmPerPx = 40 / wPx;
+                resVal.innerText = `L: 40.00 | H: ${(hPx * mmPerPx).toFixed(2)} MM`;
+                document.getElementById('status').innerText = "ЭТАЛОН ПОДТВЕРЖДЕН";
+            } else {
+                document.getElementById('status').innerText = "ОШИБКА ПРОПОРЦИЙ";
+                resVal.innerText = "CHECK RATIO";
+            }
         }
     }
 </script>
