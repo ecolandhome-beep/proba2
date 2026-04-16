@@ -2,40 +2,33 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>MI-AI: Master Inspect</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>MI-AI: Precision Touch</title>
     <style>
         :root { --green: #0f0; --bg: #000; }
-        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; overflow-x: hidden; }
-        #view { position: relative; width: 100%; height: 50vh; background: #111; }
-        video, #c { position: absolute; width: 100%; height: 100%; object-fit: contain; }
-        .ui { padding: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        #display { grid-column: span 2; text-align: center; padding: 12px; border: 1px solid var(--green); background: #001500; min-height: 60px; }
-        #res-val { font-size: 22px; font-weight: bold; color: white; margin-top: 5px; }
-        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 12px; font-weight: bold; font-family: inherit; font-size: 14px; }
-        #result-preview { grid-column: span 2; margin-top: 10px; text-align: center; }
-        #result-preview img { max-width: 100%; border: 1px solid var(--green); display: none; }
-        .save-tip { font-size: 11px; color: #aaa; margin-top: 5px; display: none; }
+        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; touch-action: none; }
+        #app { display: flex; flex-direction: column; height: 100vh; }
+        #canvas-container { flex-grow: 1; position: relative; overflow: hidden; background: #111; }
+        canvas { width: 100%; height: 100%; object-fit: contain; }
+        .controls { padding: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: #000; }
+        #info { grid-column: span 2; border: 1px solid var(--green); padding: 10px; text-align: center; font-size: 16px; }
+        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
+        #save-hint { font-size: 10px; color: #888; grid-column: span 2; text-align: center; }
     </style>
 </head>
 <body>
 
-<div id="view">
-    <video id="v" playsinline muted autoplay></video>
-    <canvas id="c" style="display:none;"></canvas>
-</div>
-
-<div class="ui">
-    <div id="display">
-        <div id="status">ОЖИДАНИЕ СИНЕГО ЭТАЛОНА</div>
-        <div id="res-val">---</div>
+<div id="app">
+    <div id="canvas-container">
+        <video id="v" style="display:none;" playsinline autoplay></video>
+        <canvas id="c"></canvas>
     </div>
-    <button onclick="init()">1. КАМЕРА</button>
-    <button onclick="measure()">2. ЗАМЕР</button>
-    
-    <div id="result-preview">
-        <img id="out-img">
-        <div class="save-tip" id="tip">↑ Зажмите фото для сохранения в галерею</div>
+
+    <div class="controls">
+        <div id="info">НАЖМИТЕ "СТАРТ" И СДЕЛАЙТЕ ЗАХВАТ</div>
+        <button onclick="startCam()">1. СТАРТ</button>
+        <button onclick="capture()">2. ЗАХВАТ</button>
+        <div id="save-hint">После замера: зажмите экран для сохранения результата</div>
     </div>
 </div>
 
@@ -43,59 +36,91 @@
     const v = document.getElementById('v');
     const c = document.getElementById('c');
     const ctx = c.getContext('2d');
-    const outImg = document.getElementById('out-img');
+    const info = document.getElementById('info');
 
-    async function init() {
-        const s = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', width:1280}});
-        v.srcObject = s;
-        v.onloadedmetadata = () => { c.width = v.videoWidth; c.height = v.videoHeight; };
+    let mmPerPx = 0;
+    let points = [];
+    let isCaptured = false;
+    let baseImg = null;
+
+    async function startCam() {
+        const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment', width: 1280}});
+        v.srcObject = stream;
+        requestAnimationFrame(drawPreview);
     }
 
-    function measure() {
-        ctx.drawImage(v, 0, 0, c.width, c.height);
-        const data = ctx.getImageData(0,0,c.width,c.height).data;
-        let pts = [];
+    function drawPreview() {
+        if (!isCaptured) {
+            c.width = v.videoWidth;
+            c.height = v.videoHeight;
+            ctx.drawImage(v, 0, 0);
+            requestAnimationFrame(drawPreview);
+        }
+    }
+
+    function capture() {
+        isCaptured = true;
+        ctx.drawImage(v, 0, 0);
+        baseImg = ctx.getImageData(0, 0, c.width, c.height);
         
-        // Поиск синего цвета (усиленный порог)
-        for(let i=0; i<data.length; i+=16) {
-            if(data[i+2]>120 && data[i+2]>data[i]*1.8 && data[i+2]>data[i+1]*1.8) {
-                pts.push({x:(i/4)%c.width, y:Math.floor((i/4)/c.width)});
+        // Автоматический поиск эталона (синий ластик 40мм)
+        let pixels = baseImg.data;
+        let bluePts = [];
+        for (let i = 0; i < pixels.length; i += 16) {
+            if (pixels[i+2] > 130 && pixels[i+2] > pixels[i]*1.8) {
+                bluePts.push({x: (i/4)%c.width, y: Math.floor((i/4)/c.width)});
             }
         }
 
-        if(pts.length > 40) {
-            const x1 = Math.min(...pts.map(p=>p.x)), x2 = Math.max(...pts.map(p=>p.x));
-            const y1 = Math.min(...pts.map(p=>p.y)), y2 = Math.max(...pts.map(p=>p.y));
-            const w = x2-x1, h = y2-y1;
-            const ratio = w/h;
-
-            // ПРОВЕРКА ЭТАЛОНА ПО СООТНОШЕНИЮ (от 1.6 до 2.4 для ластика 2:1)
-            if(ratio > 1.6 && ratio < 2.4) {
-                ctx.strokeStyle = '#0f0'; ctx.lineWidth = 5;
-                ctx.strokeRect(x1, y1, w, h);
-                const mmPx = 40/w;
-                const txt = `L: 40.00mm | H: ${(h*mmPx).toFixed(2)}mm`;
-                
-                // Наложение графики
-                ctx.fillStyle = '#0f0'; ctx.font = 'bold 30px Arial';
-                ctx.fillText(txt, x1, y1-15);
-                ctx.font = '15px Arial';
-                ctx.fillText(`MI-AI LOG | ${new Date().toLocaleString()}`, 20, c.height-20);
-
-                document.getElementById('res-val').innerText = txt;
-                document.getElementById('status').innerText = "ЭТАЛОН ПОДТВЕРЖДЕН";
-                
-                // Конвертация в картинку для сохранения на iPhone
-                outImg.src = c.toDataURL('image/png');
-                outImg.style.display = 'inline-block';
-                document.getElementById('tip').style.display = 'block';
-            } else {
-                document.getElementById('status').innerText = "ОШИБКА ПРОПОРЦИЙ: " + ratio.toFixed(2);
-                document.getElementById('res-val').innerText = "НЕ ЭТАЛОН";
-                outImg.style.display = 'none';
-            }
-        } else { alert("Синий объект не найден!"); }
+        if (bluePts.length > 50) {
+            const x1 = Math.min(...bluePts.map(p => p.x)), x2 = Math.max(...bluePts.map(p => p.x));
+            const w = x2 - x1;
+            mmPerPx = 40 / w; // Эталон 40мм
+            
+            ctx.strokeStyle = '#0f0'; ctx.lineWidth = 4;
+            ctx.strokeRect(x1, Math.min(...bluePts.map(p => p.y)), w, Math.max(...bluePts.map(p => p.y)) - Math.min(...bluePts.map(p => p.y)));
+            info.innerHTML = `МАСШТАБ УСТАНОВЛЕН<br>Ткните в две точки для замера`;
+        } else {
+            alert("Синий эталон не найден! Попробуйте еще раз.");
+            isCaptured = false;
+            requestAnimationFrame(drawPreview);
+        }
     }
+
+    c.addEventListener('touchstart', (e) => {
+        if (!isCaptured || mmPerPx === 0) return;
+        
+        const rect = c.getBoundingClientRect();
+        const scaleX = c.width / rect.width;
+        const scaleY = c.height / rect.height;
+        const x = (e.touches[0].clientX - rect.left) * scaleX;
+        const y = (e.touches[0].clientY - rect.top) * scaleY;
+
+        points.push({x, y});
+
+        // Рисуем точку
+        ctx.fillStyle = '#0f0';
+        ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI*2); ctx.fill();
+
+        if (points.length === 2) {
+            const distPx = Math.sqrt(Math.pow(points[2].x - points[0].x, 2) + Math.pow(points[1].y - points[0].y, 2));
+            const distMm = (distPx * mmPerPx).toFixed(2);
+            
+            // Рисуем линию замера
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            ctx.lineTo(points[1].x, points[1].y);
+            ctx.stroke();
+
+            // Пишем результат
+            ctx.font = "bold 40px Arial";
+            ctx.fillStyle = "white";
+            ctx.fillText(`${distMm} mm`, (points[0].x + points[1].x)/2, (points[0].y + points[1].y)/2 - 20);
+            
+            info.innerHTML = `РЕЗУЛЬТАТ: <span style="color:white; font-size:24px;">${distMm} мм</span>`;
+            points = []; // Сброс для следующего замера
+        }
+    });
 </script>
 </body>
 </html>
