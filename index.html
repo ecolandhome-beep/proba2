@@ -2,18 +2,29 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>MI-AI: Precision Touch</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>MI-AI: Precision Lab</title>
     <style>
         :root { --green: #0f0; --bg: #000; }
-        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; touch-action: none; }
+        body { margin: 0; background: var(--bg); color: var(--green); font-family: monospace; overflow: hidden; touch-action: none; }
         #app { display: flex; flex-direction: column; height: 100vh; }
-        #canvas-container { flex-grow: 1; position: relative; overflow: hidden; background: #111; }
+        #canvas-container { flex: 1; position: relative; background: #111; cursor: crosshair; }
         canvas { width: 100%; height: 100%; object-fit: contain; }
-        .controls { padding: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: #000; }
-        #info { grid-column: span 2; border: 1px solid var(--green); padding: 10px; text-align: center; font-size: 16px; }
-        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 15px; font-weight: bold; }
-        #save-hint { font-size: 10px; color: #888; grid-column: span 2; text-align: center; }
+        
+        .ui { background: #0a0a0a; border-top: 1px solid var(--green); padding: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; z-index: 100; }
+        #display { grid-column: span 2; text-align: center; padding: 10px; border: 1px solid var(--green); background: #001500; font-size: 14px; }
+        #res-val { font-size: 20px; font-weight: bold; color: white; margin-top: 4px; }
+        
+        button { background: #000; color: var(--green); border: 2px solid var(--green); padding: 12px; font-weight: bold; font-family: inherit; font-size: 12px; text-transform: uppercase; }
+        button:active { background: var(--green); color: #000; }
+        button.reset { border-color: #f44; color: #f44; }
+
+        #zoom-window { 
+            position: absolute; top: 10px; right: 10px; width: 120px; height: 120px; 
+            border: 2px solid var(--green); background: #000; display: none; pointer-events: none; z-index: 200;
+            image-rendering: pixelated; overflow: hidden;
+        }
+        #zoom-canvas { width: 100%; height: 100%; }
     </style>
 </head>
 <body>
@@ -22,105 +33,124 @@
     <div id="canvas-container">
         <video id="v" style="display:none;" playsinline autoplay></video>
         <canvas id="c"></canvas>
+        <div id="zoom-window"><canvas id="zoom-canvas"></canvas></div>
     </div>
 
-    <div class="controls">
-        <div id="info">НАЖМИТЕ "СТАРТ" И СДЕЛАЙТЕ ЗАХВАТ</div>
-        <button onclick="startCam()">1. СТАРТ</button>
+    <div class="ui">
+        <div id="display">
+            <div id="status">ЭТАЛОН: СИНИЙ ЛАСТИК (40x20)</div>
+            <div id="res-val">READY</div>
+        </div>
+        <button onclick="init()">1. КАМЕРА</button>
         <button onclick="capture()">2. ЗАХВАТ</button>
-        <div id="save-hint">После замера: зажмите экран для сохранения результата</div>
+        <button class="reset" onclick="clearPoints()">ОЧИСТИТЬ ТОЧКИ</button>
+        <button onclick="saveResult()">СОХРАНИТЬ ФОТО</button>
     </div>
 </div>
 
 <script>
-    const v = document.getElementById('v');
-    const c = document.getElementById('c');
-    const ctx = c.getContext('2d');
-    const info = document.getElementById('info');
+    const v = document.getElementById('v'), c = document.getElementById('c'), ctx = c.getContext('2d');
+    const zoomWin = document.getElementById('zoom-window'), zc = document.getElementById('zoom-canvas'), zctx = zc.getContext('2d');
+    const resVal = document.getElementById('res-val'), statusText = document.getElementById('status');
 
-    let mmPerPx = 0;
-    let points = [];
-    let isCaptured = false;
-    let baseImg = null;
+    let mmPerPx = 0, points = [], isCaptured = false, activePoint = null;
 
-    async function startCam() {
-        const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment', width: 1280}});
-        v.srcObject = stream;
-        requestAnimationFrame(drawPreview);
+    async function init() {
+        const s = await navigator.mediaDevices.getUserMedia({video: {facingMode:'environment', width:1280}});
+        v.srcObject = s;
+        isCaptured = false; points = [];
+        requestAnimationFrame(draw);
     }
 
-    function drawPreview() {
+    function draw() {
         if (!isCaptured) {
-            c.width = v.videoWidth;
-            c.height = v.videoHeight;
+            c.width = v.videoWidth; c.height = v.videoHeight;
             ctx.drawImage(v, 0, 0);
-            requestAnimationFrame(drawPreview);
+            requestAnimationFrame(draw);
+        } else {
+            renderFrame();
         }
     }
 
     function capture() {
         isCaptured = true;
         ctx.drawImage(v, 0, 0);
-        baseImg = ctx.getImageData(0, 0, c.width, c.height);
-        
-        // Автоматический поиск эталона (синий ластик 40мм)
-        let pixels = baseImg.data;
-        let bluePts = [];
-        for (let i = 0; i < pixels.length; i += 16) {
-            if (pixels[i+2] > 130 && pixels[i+2] > pixels[i]*1.8) {
-                bluePts.push({x: (i/4)%c.width, y: Math.floor((i/4)/c.width)});
+        detectAnchor();
+    }
+
+    function detectAnchor() {
+        const data = ctx.getImageData(0,0,c.width,c.height).data;
+        let pts = [];
+        for(let i=0; i<data.length; i+=32) {
+            if(data[i+2]>110 && data[i+2]>data[i]*1.7 && data[i+2]>data[i+1]*1.7) {
+                pts.push({x:(i/4)%c.width, y:Math.floor((i/4)/c.width)});
             }
         }
+        if(pts.length > 30) {
+            const x1 = Math.min(...pts.map(p=>p.x)), x2 = Math.max(...pts.map(p=>p.x));
+            const y1 = Math.min(...pts.map(p=>p.y)), y2 = Math.max(...pts.map(p=>p.y));
+            mmPerPx = 40 / (x2 - x1);
+            statusText.innerText = "МАСШТАБ УСТАНОВЛЕН. ЗАМЕРЯЙТЕ ОБЪЕКТ.";
+        } else { alert("Эталон не найден!"); isCaptured = false; draw(); }
+    }
 
-        if (bluePts.length > 50) {
-            const x1 = Math.min(...bluePts.map(p => p.x)), x2 = Math.max(...bluePts.map(p => p.x));
-            const w = x2 - x1;
-            mmPerPx = 40 / w; // Эталон 40мм
-            
-            ctx.strokeStyle = '#0f0'; ctx.lineWidth = 4;
-            ctx.strokeRect(x1, Math.min(...bluePts.map(p => p.y)), w, Math.max(...bluePts.map(p => p.y)) - Math.min(...bluePts.map(p => p.y)));
-            info.innerHTML = `МАСШТАБ УСТАНОВЛЕН<br>Ткните в две точки для замера`;
-        } else {
-            alert("Синий эталон не найден! Попробуйте еще раз.");
-            isCaptured = false;
-            requestAnimationFrame(drawPreview);
+    function renderFrame() {
+        ctx.drawImage(v, 0, 0); // В будущем тут будет baseImage
+        if(mmPerPx > 0) {
+            ctx.strokeStyle = '#0f0'; ctx.lineWidth = 3;
+            points.forEach((p, i) => {
+                ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.stroke();
+                ctx.fillText(i+1, p.x+10, p.y-10);
+            });
+            if(points.length === 2) {
+                const d = Math.sqrt(Math.pow(points[1].x-points[0].x,2)+Math.pow(points[1].y-points[0].y,2));
+                const res = (d * mmPerPx).toFixed(2);
+                ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(points[1].x, points[1].y); ctx.stroke();
+                resVal.innerText = res + " MM";
+            }
         }
     }
 
-    c.addEventListener('touchstart', (e) => {
-        if (!isCaptured || mmPerPx === 0) return;
-        
+    function handleTouch(e) {
+        if(!isCaptured) return;
         const rect = c.getBoundingClientRect();
-        const scaleX = c.width / rect.width;
-        const scaleY = c.height / rect.height;
-        const x = (e.touches[0].clientX - rect.left) * scaleX;
-        const y = (e.touches[0].clientY - rect.top) * scaleY;
+        const touch = e.touches[0];
+        const x = (touch.clientX - rect.left) * (c.width/rect.width);
+        const y = (touch.clientY - rect.top) * (c.height/rect.height);
 
-        points.push({x, y});
-
-        // Рисуем точку
-        ctx.fillStyle = '#0f0';
-        ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI*2); ctx.fill();
-
-        if (points.length === 2) {
-            const distPx = Math.sqrt(Math.pow(points[2].x - points[0].x, 2) + Math.pow(points[1].y - points[0].y, 2));
-            const distMm = (distPx * mmPerPx).toFixed(2);
-            
-            // Рисуем линию замера
-            ctx.beginPath();
-            ctx.moveTo(points[0].x, points[0].y);
-            ctx.lineTo(points[1].x, points[1].y);
-            ctx.stroke();
-
-            // Пишем результат
-            ctx.font = "bold 40px Arial";
-            ctx.fillStyle = "white";
-            ctx.fillText(`${distMm} mm`, (points[0].x + points[1].x)/2, (points[0].y + points[1].y)/2 - 20);
-            
-            info.innerHTML = `РЕЗУЛЬТАТ: <span style="color:white; font-size:24px;">${distMm} мм</span>`;
-            points = []; // Сброс для следующего замера
+        if(e.type === 'touchstart') {
+            activePoint = points.find(p => Math.hypot(p.x-x, p.y-y) < 30);
+            if(!activePoint && points.length < 2) {
+                activePoint = {x, y}; points.push(activePoint);
+            }
+            zoomWin.style.display = 'block';
         }
-    });
+        
+        if(activePoint) {
+            activePoint.x = x; activePoint.y = y;
+            updateZoom(x, y);
+            renderFrame();
+        }
+    }
+
+    function updateZoom(x, y) {
+        zc.width = 100; zc.height = 100;
+        zctx.drawImage(c, x-25, y-25, 50, 50, 0, 0, 100, 100);
+        zctx.strokeStyle = 'red'; zctx.strokeRect(45, 45, 10, 10);
+    }
+
+    c.addEventListener('touchstart', handleTouch);
+    c.addEventListener('touchmove', handleTouch);
+    c.addEventListener('touchend', () => { zoomWin.style.display = 'none'; activePoint = null; });
+
+    function clearPoints() { points = []; resVal.innerText = "READY"; renderFrame(); }
+    
+    function saveResult() {
+        const link = document.createElement('a');
+        link.download = `MIAI_${Date.now()}.png`;
+        link.href = c.toDataURL();
+        link.click();
+    }
 </script>
 </body>
 </html>
