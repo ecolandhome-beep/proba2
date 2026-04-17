@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MASTER-INSPECT AI v0.2</title>
+    <title>MASTER-INSPECT AI: 3D Prototype</title>
     <style>
         :root { 
             --green: #0f0; 
             --bg: #000;
-            --ui-height: 190px; 
+            --ui-height: 200px; 
         }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { 
@@ -25,23 +25,28 @@
         .ui { 
             height: var(--ui-height); background: #0a0a0a; border-top: 1px solid var(--green); 
             padding: 10px 15px; display: grid; grid-template-columns: 1fr 1fr; 
-            grid-template-rows: auto 1fr 1fr; gap: 10px; z-index: 100;
+            grid-template-rows: auto auto 1fr 1fr; gap: 8px; z-index: 100;
         }
         #display { grid-column: span 2; text-align: center; padding: 8px; border: 1px solid var(--green); background: #001500; }
         #status { font-size: 11px; text-transform: uppercase; opacity: 0.8; margin-bottom: 4px; }
-        #res-val { font-size: 22px; font-weight: bold; color: white; }
+        #res-val { font-size: 20px; font-weight: bold; color: white; }
+        
+        /* Индикатор уровня для помощи пользователю */
+        #level-indicator { grid-column: span 2; height: 4px; background: #222; position: relative; border-radius: 2px; }
+        #level-bar { position: absolute; left: 50%; width: 2px; height: 100%; background: var(--green); transition: 0.1s; }
+
         button { 
             background: #000; color: var(--green); border: 1.5px solid var(--green); 
-            font-weight: bold; font-family: inherit; font-size: 12px; text-transform: uppercase;
-            display: flex; align-items: center; justify-content: center; min-height: 50px; 
+            font-weight: bold; font-family: inherit; font-size: 11px; text-transform: uppercase;
+            display: flex; align-items: center; justify-content: center; min-height: 44px; 
         }
         button:active { background: var(--green); color: #000; }
         button.reset { border-color: #f44; color: #f44; }
+        
         #zoom-window { 
             position: absolute; top: 20px; right: 20px; width: 140px; height: 140px; 
             border: 2px solid var(--green); background: #000; display: none; 
             pointer-events: none; z-index: 1000; image-rendering: pixelated; 
-            box-shadow: 0 0 20px rgba(0,255,0,0.4);
         }
         #zoom-canvas { width: 100%; height: 100%; }
     </style>
@@ -56,13 +61,15 @@
     </div>
     <div class="ui">
         <div id="display">
-            <div id="status">Система готова</div>
+            <div id="status">ОЖИДАНИЕ ИНИЦИАЛИЗАЦИИ</div>
             <div id="res-val">---</div>
         </div>
-        <button onclick="init()">1. КАМЕРА</button>
-        <button onclick="capture()">2. ЗАХВАТ</button>
-        <button class="reset" onclick="clearPoints()">ОЧИСТКА</button>
-        <button onclick="saveResult()">СОХРАНИТЬ</button>
+        <div id="level-indicator"><div id="level-bar"></div></div>
+        
+        <button onclick="initCamera()">1. КАМЕРА</button>
+        <button onclick="captureFrame()">2. ЗАХВАТ</button>
+        <button class="reset" onclick="resetAll()">ОЧИСТКА</button>
+        <button onclick="saveAndProcess()">3. В МОДЕЛЬ</button>
     </div>
 </div>
 
@@ -70,186 +77,167 @@
     const v = document.getElementById('v'), c = document.getElementById('c'), ctx = c.getContext('2d', { alpha: false });
     const zoomWin = document.getElementById('zoom-window'), zc = document.getElementById('zoom-canvas'), zctx = zc.getContext('2d');
     const resVal = document.getElementById('res-val'), statusText = document.getElementById('status');
-    
+    const levelBar = document.getElementById('level-bar');
+
     let mmPerPx = 0, points = [], isCaptured = false, activePoint = null, baseImage = null;
 
-    async function init() {
+    // Инициализация гироскопа (как опция, не блокирующая работу)
+    if (window.DeviceOrientationEvent) {
+        window.addEventListener('deviceorientation', (e) => {
+            const tilt = Math.min(Math.max(e.gamma, -45), 45);
+            levelBar.style.left = (50 + (tilt/45)*50) + '%';
+        });
+    }
+
+    async function initCamera() {
         try {
-            const s = await navigator.mediaDevices.getUserMedia({ 
+            const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
             });
-            v.srcObject = s; 
-            isCaptured = false; 
-            points = [];
-            statusText.innerText = "ПРЯМОЙ ЭФИР: ПОМЕСТИТЕ ЭТАЛОН";
-            requestAnimationFrame(draw);
-        } catch (e) { alert("Доступ к камере отклонен"); }
-    }
-
-    function draw() {
-        if (!isCaptured) {
-            if (v.videoWidth > 0) { 
-                c.width = v.videoWidth; 
-                c.height = v.videoHeight; 
-                ctx.drawImage(v, 0, 0); 
-            }
-            requestAnimationFrame(draw);
+            v.srcObject = stream;
+            isCaptured = false;
+            statusText.innerText = "ПРЯМОЙ ЭФИР: ВЫРАВНЯЙТЕ ОБЪЕКТ";
+            requestAnimationFrame(liveView);
+        } catch (err) {
+            statusText.innerText = "ОШИБКА КАМЕРЫ";
+            alert("Нужен доступ к камере");
         }
     }
 
-    function capture() {
+    function liveView() {
+        if (!isCaptured && v.videoWidth > 0) {
+            c.width = v.videoWidth;
+            c.height = v.videoHeight;
+            ctx.drawImage(v, 0, 0);
+            requestAnimationFrame(liveView);
+        }
+    }
+
+    function captureFrame() {
         isCaptured = true;
         baseImage = document.createElement('canvas');
-        baseImage.width = c.width; 
+        baseImage.width = c.width;
         baseImage.height = c.height;
         baseImage.getContext('2d').drawImage(v, 0, 0);
-        detectAnchor();
-        renderFrame();
+        
+        // Автоматический поиск маркера (синий ластик 40мм)
+        detectMarker();
+        renderScene();
     }
 
-    function detectAnchor() {
-        const data = ctx.getImageData(0,0,c.width,c.height).data;
-        let pts = [];
-        // Сканируем на предмет синего ластика (эталон 40мм)
-        for(let i=0; i<data.length; i+=64) {
-            let r = data[i], g = data[i+1], b = data[i+2];
-            if(b > 100 && b > r * 1.5 && b > g * 1.5) {
-                pts.push({x:(i/4)%c.width, y:Math.floor((i/4)/c.width)});
+    function detectMarker() {
+        const imgData = ctx.getImageData(0, 0, c.width, c.height).data;
+        let hits = [];
+        for (let i = 0; i < imgData.length; i += 128) {
+            const r = imgData[i], g = imgData[i+1], b = imgData[i+2];
+            if (b > 120 && b > r * 1.6 && b > g * 1.6) {
+                hits.push({x: (i/4)%c.width, y: Math.floor((i/4)/c.width)});
             }
         }
-        if(pts.length > 50) {
-            const x1 = Math.min(...pts.map(p=>p.x)), x2 = Math.max(...pts.map(p=>p.x));
-            mmPerPx = 40 / (x2 - x1);
-            statusText.innerText = "МАСШТАБ УСТАНОВЛЕН. УКАЖИТЕ ТОЧКИ.";
-        } else { 
-            alert("Эталон не найден! Используйте синий предмет."); 
-            isCaptured = false; 
-            requestAnimationFrame(draw); 
+        if (hits.length > 30) {
+            const minX = Math.min(...hits.map(h => h.x)), maxX = Math.max(...hits.map(h => h.x));
+            mmPerPx = 40 / (maxX - minX);
+            statusText.innerText = "МАСШТАБ ОК. УКАЖИТЕ ГРАНИЦЫ.";
+        } else {
+            statusText.innerText = "ЭТАЛОН НЕ НАЙДЕН. ИСПОЛЬЗУЙТЕ СИНИЙ ЦВЕТ.";
         }
     }
 
-    function renderFrame() {
+    function renderScene() {
         if (!baseImage) return;
         ctx.drawImage(baseImage, 0, 0);
         
-        ctx.strokeStyle = '#0f0'; 
-        ctx.lineWidth = Math.max(3, c.width/300); 
+        ctx.strokeStyle = '#0f0';
+        ctx.lineWidth = Math.max(3, c.width / 400);
         ctx.fillStyle = '#0f0';
-        ctx.font = `${Math.max(24, c.width/40)}px monospace`;
+        ctx.font = `${Math.max(22, c.width / 45)}px monospace`;
 
         points.forEach((p, i) => {
-            ctx.beginPath(); 
-            ctx.arc(p.x, p.y, ctx.lineWidth * 2.5, 0, 7); 
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, ctx.lineWidth * 3, 0, 7);
             ctx.stroke();
-            ctx.fillText(i+1, p.x + 20, p.y - 20);
+            ctx.fillText(i + 1, p.x + 20, p.y - 20);
         });
 
-        if(points.length === 2) {
-            const d = Math.sqrt(Math.pow(points[1].x-points[0].x,2)+Math.pow(points[1].y-points[0].y,2));
-            const res = (d * mmPerPx).toFixed(2);
-            ctx.beginPath(); 
-            ctx.moveTo(points[0].x, points[0].y); 
-            ctx.lineTo(points[1].x, points[1].y); 
+        if (points.length === 2) {
+            const distPx = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+            const valMm = (distPx * mmPerPx).toFixed(2);
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            ctx.lineTo(points[1].x, points[1].y);
             ctx.stroke();
-            resVal.innerText = res + " MM";
+            resVal.innerText = valMm + " MM";
         }
     }
 
-    function handleTouch(e) {
-        if(!isCaptured) return;
+    function handleInput(e) {
+        if (!isCaptured) return;
         e.preventDefault();
         const rect = c.getBoundingClientRect();
-        const touch = e.touches[0];
-        const x = (touch.clientX - rect.left) * (c.width/rect.width);
-        const y = (touch.clientY - rect.top) * (c.height/rect.height);
+        const touch = e.touches ? e.touches[0] : e;
+        const x = (touch.clientX - rect.left) * (c.width / rect.width);
+        const y = (touch.clientY - rect.top) * (c.height / rect.height);
 
-        if(e.type === 'touchstart') {
-            activePoint = points.find(p => Math.hypot(p.x-x, p.y-y) * (rect.width/c.width) < 40);
-            if(!activePoint && points.length < 2) { 
-                activePoint = {x, y}; 
-                points.push(activePoint); 
+        if (e.type === 'touchstart' || e.type === 'mousedown') {
+            activePoint = points.find(p => Math.hypot(p.x - x, p.y - y) * (rect.width / c.width) < 40);
+            if (!activePoint && points.length < 2) {
+                activePoint = {x, y};
+                points.push(activePoint);
             }
             zoomWin.style.display = 'block';
         }
-        if(activePoint) { 
-            activePoint.x = x; 
-            activePoint.y = y; 
-            updateZoom(x, y); 
-            renderFrame(); 
+        if (activePoint) {
+            activePoint.x = x;
+            activePoint.y = y;
+            drawZoom(x, y);
+            renderScene();
         }
     }
 
-    function updateZoom(x, y) {
-        const size = 80; 
-        zc.width = 160; zc.height = 160;
+    function drawZoom(x, y) {
+        const s = 100;
+        zc.width = 200; zc.height = 200;
         zctx.imageSmoothingEnabled = false;
-        zctx.drawImage(c, x - size/2, y - size/2, size, size, 0, 0, 160, 160);
-        zctx.strokeStyle = 'red'; 
+        zctx.drawImage(c, x - s/2, y - s/2, s, s, 0, 0, 200, 200);
+        zctx.strokeStyle = 'red';
         zctx.lineWidth = 2;
-        zctx.beginPath(); 
-        zctx.moveTo(80, 60); zctx.lineTo(80, 100); 
-        zctx.moveTo(60, 80); zctx.lineTo(100, 80); 
-        zctx.stroke();
+        zctx.strokeRect(90, 90, 20, 20);
     }
 
-    c.addEventListener('touchstart', handleTouch, {passive: false});
-    c.addEventListener('touchmove', handleTouch, {passive: false});
-    c.addEventListener('touchend', () => { zoomWin.style.display = 'none'; activePoint = null; });
+    c.addEventListener('touchstart', handleInput, {passive: false});
+    c.addEventListener('touchmove', handleInput, {passive: false});
+    window.addEventListener('touchend', () => { zoomWin.style.display = 'none'; activePoint = null; });
 
-    function clearPoints() { 
-        points = []; 
-        resVal.innerText = "---"; 
-        renderFrame(); 
+    function resetAll() {
+        points = [];
+        resVal.innerText = "---";
+        isCaptured = false;
+        requestAnimationFrame(liveView);
     }
 
-    function saveResult() {
-        if (points.length < 2) { alert("Сначала сделайте замер"); return; }
+    function saveAndProcess() {
+        if (points.length < 2) { alert("Нужно две точки замера"); return; }
         
-        const saveCanvas = document.createElement('canvas');
-        saveCanvas.width = c.width; 
-        saveCanvas.height = c.height;
-        const sCtx = saveCanvas.getContext('2d');
+        const finalCanvas = document.createElement('canvas');
+        finalCanvas.width = c.width;
+        finalCanvas.height = c.height;
+        const fCtx = finalCanvas.getContext('2d');
+        fCtx.drawImage(baseImage, 0, 0);
+        
+        // Впекаем данные в файл для будущего 3D движка
+        fCtx.fillStyle = "rgba(0,0,0,0.7)";
+        fCtx.fillRect(10, 10, 300, 60);
+        fCtx.fillStyle = "#0f0";
+        fCtx.font = "24px monospace";
+        fCtx.fillText(`RES: ${resVal.innerText}`, 30, 45);
 
-        // 1. Рисуем чистое фото
-        sCtx.drawImage(baseImage, 0, 0);
-
-        // 2. Впекаем графику
-        const lineW = Math.max(5, saveCanvas.width / 250);
-        sCtx.strokeStyle = '#0f0'; 
-        sCtx.lineWidth = lineW;
-        sCtx.fillStyle = '#0f0';
-        sCtx.font = `bold ${Math.max(30, saveCanvas.width / 35)}px monospace`;
-
-        points.forEach((p, i) => {
-            sCtx.beginPath(); 
-            sCtx.arc(p.x, p.y, lineW * 2, 0, 7); 
-            sCtx.fill();
-            sCtx.fillText(i + 1, p.x + 25, p.y - 25);
-        });
-
-        sCtx.beginPath(); 
-        sCtx.moveTo(points[0].x, points[0].y); 
-        sCtx.lineTo(points[1].x, points[1].y); 
-        sCtx.stroke();
-
-        // 3. Плашка с результатом в углу
-        const resText = resVal.innerText;
-        const tw = sCtx.measureText(resText).width;
-        sCtx.fillStyle = 'rgba(0,0,0,0.8)';
-        sCtx.fillRect(20, 20, tw + 40, 80);
-        sCtx.fillStyle = '#0f0';
-        sCtx.fillText(resText, 40, 75);
-
-        // 4. Открываем для ручного сохранения
-        const dataUrl = saveCanvas.toDataURL('image/png');
+        const url = finalCanvas.toDataURL('image/png');
         const win = window.open();
         win.document.write(`
-            <body style="margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
-                <img src="${dataUrl}" style="max-width:100%;max-height:85vh;border:1px solid #0f0;">
-                <p style="color:#0f0;font-family:monospace;margin-top:20px;text-align:center;padding:0 20px;">
-                    ЗАЖМИТЕ ПАЛЕЦ НА ФОТО<br>И ВЫБЕРИТЕ "СОХРАНИТЬ В ФОТО"
-                </p>
-                <button onclick="window.close()" style="margin-top:20px;background:none;border:1px solid #0f0;color:#0f0;padding:10px 20px;">ВЕРНУТЬСЯ</button>
+            <body style="margin:0;background:#000;color:#0f0;text-align:center;font-family:monospace;">
+                <img src="${url}" style="max-width:100%;border-bottom:1px solid #0f0;">
+                <p>ДАННЫЕ ЗАФИКСИРОВАНЫ ДЛЯ 3D ОБРАБОТКИ</p>
+                <button onclick="window.close()" style="background:#0f0;color:#000;padding:10px 20px;border:none;">ВЕРНУТЬСЯ</button>
             </body>
         `);
     }
