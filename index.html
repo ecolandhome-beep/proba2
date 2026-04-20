@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>MI-AI | ArUco измеритель</title>
+    <!-- Eruda: консоль на телефоне для отладки -->
+    <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+    <script>eruda.init();</script>
+    <!-- библиотека ArUco -->
     <script src="https://cdn.jsdelivr.net/npm/aruco-3d@1.0.1/aruco.js"></script>
     <style>
         * {
@@ -58,6 +62,7 @@
             padding: 12px;
             border-radius: 8px;
             text-transform: uppercase;
+            cursor: pointer;
         }
         button:active {
             background: #0f0;
@@ -98,14 +103,14 @@
 <div class="ui-panel">
     <div class="status" id="statusMsg">⚠️ Нажмите «СТАРТ» для доступа к камере</div>
     <div class="result" id="distanceResult">--- mm</div>
-    <button id="startBtn" class="start-btn">▶ СТАРТ</button>
-    <button id="resetBtn" class="reset-btn">СБРОС ТОЧЕК</button>
-    <button id="saveBtn">СОХРАНИТЬ ФОТО</button>
+    <button id="startBtn" class="start-btn" onclick="startCamera()">▶ СТАРТ</button>
+    <button id="resetBtn" class="reset-btn" onclick="resetPoints()">СБРОС ТОЧЕК</button>
+    <button id="saveBtn" onclick="saveSnapshot()">СОХРАНИТЬ ФОТО</button>
 </div>
 
 <script>
     // ----- НАСТРОЙКИ ЭТАЛОНА -----
-    const MARKER_SIZE_MM = 50;   // Реальный размер стороны маркера (мм). Измените под вашу распечатку.
+    const MARKER_SIZE_MM = 50;   // Реальный размер стороны маркера (мм)
     const MARKER_ID = 0;         // ID маркера
 
     // ----- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -----
@@ -115,16 +120,12 @@
     let detector = null;
     let stream = null;
     let points = [];
-    let homographyMatrix = null;   // { mmPerPx, markerCorners }
+    let homographyMatrix = null;
     let markerDetected = false;
     let cameraActive = false;
 
-    // DOM элементы
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
-    const startBtn = document.getElementById('startBtn');
-    const resetBtn = document.getElementById('resetBtn');
-    const saveBtn = document.getElementById('saveBtn');
 
     // ----- ИНИЦИАЛИЗАЦИЯ ArUco -----
     function initAruco() {
@@ -133,11 +134,16 @@
             markerSize: MARKER_SIZE_MM
         });
         console.log("ArUco detector ready");
+        statusDiv.innerText = "⚠️ Нажмите «СТАРТ» для доступа к камере";
     }
 
     // ----- ЗАПУСК КАМЕРЫ (по кнопке) -----
     async function startCamera() {
-        if (cameraActive) return;
+        console.log("startCamera вызвана");
+        if (cameraActive) {
+            console.log("Камера уже активна");
+            return;
+        }
         try {
             const constraints = {
                 video: {
@@ -148,6 +154,7 @@
                 audio: false
             };
             statusDiv.innerText = "⏳ Запрос разрешения...";
+            console.log("Запрашиваем getUserMedia");
             stream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = stream;
             await video.play();
@@ -155,10 +162,11 @@
             overlay.height = video.videoHeight;
             cameraActive = true;
             statusDiv.innerText = "🟢 Камера активна. Ищем ArUco...";
+            console.log("Камера запущена, размеры:", overlay.width, overlay.height);
             requestAnimationFrame(processFrame);
         } catch (err) {
             statusDiv.innerText = "❌ Ошибка доступа к камере: " + err.message;
-            console.error(err);
+            console.error("Ошибка getUserMedia:", err);
         }
     }
 
@@ -252,6 +260,7 @@
 
     // ----- УСТАНОВКА ТОЧЕК (касания) -----
     function handleTouch(e) {
+        console.log("touch event, cameraActive=", cameraActive, "markerDetected=", markerDetected);
         if (!cameraActive) {
             statusDiv.innerText = "❌ Сначала нажмите «СТАРТ» и разрешите камеру.";
             return;
@@ -318,10 +327,8 @@
     // ----- ИНИЦИАЛИЗАЦИЯ -----
     function init() {
         initAruco();
-        startBtn.addEventListener('click', startCamera);
         overlay.addEventListener('touchstart', handleTouch, { passive: false });
-        resetBtn.addEventListener('click', resetPoints);
-        saveBtn.addEventListener('click', saveSnapshot);
+        // кнопки уже имеют onclick в HTML
     }
 
     init();
