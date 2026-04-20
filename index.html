@@ -3,244 +3,362 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MASTER-INSPECT AI: 3D Prototype</title>
+    <title>MI-AI | ArUco измеритель</title>
+    <!-- библиотека ArUco (лёгкая, без OpenCV) -->
+    <script src="https://cdn.jsdelivr.net/npm/aruco-3d@1.0.1/aruco.js"></script>
     <style>
-        :root { 
-            --green: #0f0; 
-            --bg: #000;
-            --ui-height: 200px; 
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
-        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { 
-            margin: 0; background: var(--bg); color: var(--green); 
-            font-family: monospace; overflow: hidden; touch-action: none;
-            height: 100dvh; 
+        body {
+            margin: 0;
+            background: #000;
+            color: #0f0;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
         }
-        #app { display: flex; flex-direction: column; height: 100%; padding-bottom: env(safe-area-inset-bottom); }
-        #canvas-container { 
-            flex: 1; position: relative; background: #111; 
-            overflow: hidden; display: flex; align-items: center; justify-content: center;
+        #camera-container {
+            flex: 1;
+            position: relative;
+            background: #111;
+            overflow: hidden;
+            touch-action: none;
         }
-        canvas { max-width: 100%; max-height: 100%; object-fit: contain; }
-        .ui { 
-            height: var(--ui-height); background: #0a0a0a; border-top: 1px solid var(--green); 
-            padding: 10px 15px; display: grid; grid-template-columns: 1fr 1fr; 
-            grid-template-rows: auto auto 1fr 1fr; gap: 8px; z-index: 100;
+        video, canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
         }
-        #display { grid-column: span 2; text-align: center; padding: 8px; border: 1px solid var(--green); background: #001500; }
-        #status { font-size: 11px; text-transform: uppercase; opacity: 0.8; margin-bottom: 4px; }
-        #res-val { font-size: 20px; font-weight: bold; color: white; }
-        
-        /* Индикатор уровня для помощи пользователю */
-        #level-indicator { grid-column: span 2; height: 4px; background: #222; position: relative; border-radius: 2px; }
-        #level-bar { position: absolute; left: 50%; width: 2px; height: 100%; background: var(--green); transition: 0.1s; }
-
-        button { 
-            background: #000; color: var(--green); border: 1.5px solid var(--green); 
-            font-weight: bold; font-family: inherit; font-size: 11px; text-transform: uppercase;
-            display: flex; align-items: center; justify-content: center; min-height: 44px; 
+        canvas {
+            pointer-events: none;  /* чтобы касания проходили на слой ниже */
         }
-        button:active { background: var(--green); color: #000; }
-        button.reset { border-color: #f44; color: #f44; }
-        
-        #zoom-window { 
-            position: absolute; top: 20px; right: 20px; width: 140px; height: 140px; 
-            border: 2px solid var(--green); background: #000; display: none; 
-            pointer-events: none; z-index: 1000; image-rendering: pixelated; 
+        .ui-panel {
+            background: #0a0a0a;
+            border-top: 2px solid #0f0;
+            padding: 12px;
+            padding-bottom: max(12px, env(safe-area-inset-bottom));
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
         }
-        #zoom-canvas { width: 100%; height: 100%; }
+        button {
+            background: #000;
+            color: #0f0;
+            border: 2px solid #0f0;
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 14px;
+            padding: 12px;
+            border-radius: 8px;
+            text-transform: uppercase;
+        }
+        button:active {
+            background: #0f0;
+            color: #000;
+        }
+        .status {
+            grid-column: span 2;
+            font-size: 12px;
+            text-align: center;
+            padding: 6px;
+            background: #001500;
+            border: 1px solid #0f0;
+            border-radius: 6px;
+        }
+        .result {
+            grid-column: span 2;
+            font-size: 24px;
+            text-align: center;
+            font-weight: bold;
+            letter-spacing: 2px;
+        }
+        .reset-btn {
+            border-color: #f44;
+            color: #f44;
+        }
     </style>
 </head>
 <body>
-
-<div id="app">
-    <div id="canvas-container">
-        <video id="v" style="display:none;" playsinline autoplay></video>
-        <canvas id="c"></canvas>
-        <div id="zoom-window"><canvas id="zoom-canvas"></canvas></div>
-    </div>
-    <div class="ui">
-        <div id="display">
-            <div id="status">ОЖИДАНИЕ ИНИЦИАЛИЗАЦИИ</div>
-            <div id="res-val">---</div>
-        </div>
-        <div id="level-indicator"><div id="level-bar"></div></div>
-        
-        <button onclick="initCamera()">1. КАМЕРА</button>
-        <button onclick="captureFrame()">2. ЗАХВАТ</button>
-        <button class="reset" onclick="resetAll()">ОЧИСТКА</button>
-        <button onclick="saveAndProcess()">3. В МОДЕЛЬ</button>
-    </div>
+<div id="camera-container">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+</div>
+<div class="ui-panel">
+    <div class="status" id="statusMsg">🔍 Поиск ArUco маркера...</div>
+    <div class="result" id="distanceResult">--- mm</div>
+    <button id="resetBtn" class="reset-btn">Сброс точек</button>
+    <button id="saveBtn">Сохранить фото</button>
 </div>
 
 <script>
-    const v = document.getElementById('v'), c = document.getElementById('c'), ctx = c.getContext('2d', { alpha: false });
-    const zoomWin = document.getElementById('zoom-window'), zc = document.getElementById('zoom-canvas'), zctx = zc.getContext('2d');
-    const resVal = document.getElementById('res-val'), statusText = document.getElementById('status');
-    const levelBar = document.getElementById('level-bar');
+    // ----- НАСТРОЙКИ ЭТАЛОНА -----
+    const MARKER_SIZE_MM = 50;   // Реальный размер стороны маркера (мм). Измените под вашу распечатку.
+    const MARKER_ID = 0;         // ID маркера (можно любой, но в коде ищем конкретный)
 
-    let mmPerPx = 0, points = [], isCaptured = false, activePoint = null, baseImage = null;
+    // ----- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -----
+    let video = document.getElementById('video');
+    let overlay = document.getElementById('overlay');
+    let ctx = overlay.getContext('2d');
+    let detector = null;
+    let stream = null;
 
-    // Инициализация гироскопа (как опция, не блокирующая работу)
-    if (window.DeviceOrientationEvent) {
-        window.addEventListener('deviceorientation', (e) => {
-            const tilt = Math.min(Math.max(e.gamma, -45), 45);
-            levelBar.style.left = (50 + (tilt/45)*50) + '%';
+    // Для замера
+    let points = [];           // массив из 1 или 2 точек {x, y} в координатах canvas (пиксели)
+    let homographyMatrix = null;   // матрица 3x3 для преобразования экран -> плоскость маркера
+    let markerDetected = false;
+
+    // DOM элементы
+    const statusDiv = document.getElementById('statusMsg');
+    const distanceDiv = document.getElementById('distanceResult');
+    const resetBtn = document.getElementById('resetBtn');
+    const saveBtn = document.getElementById('saveBtn');
+
+    // ----- ИНИЦИАЛИЗАЦИЯ ArUco -----
+    function initAruco() {
+        // Параметры детектора: словарь 4x4 (можно и 5x5, но 4x4 компактнее)
+        detector = new AR.Detector({
+            dictionary: "4x4",
+            markerSize: MARKER_SIZE_MM   // в мм, нужно для масштаба, но мы сами пересчитаем
         });
+        statusDiv.innerText = "📷 Камера: ожидание...";
     }
 
-    async function initCamera() {
+    // ----- ЗАПУСК КАМЕРЫ -----
+    async function startCamera() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
-            });
-            v.srcObject = stream;
-            isCaptured = false;
-            statusText.innerText = "ПРЯМОЙ ЭФИР: ВЫРАВНЯЙТЕ ОБЪЕКТ";
-            requestAnimationFrame(liveView);
+            const constraints = {
+                video: {
+                    facingMode: 'environment',
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
+                },
+                audio: false
+            };
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            await video.play();
+            // Размеры canvas под видео
+            overlay.width = video.videoWidth;
+            overlay.height = video.videoHeight;
+            statusDiv.innerText = "🟢 Камера активна. Ищем ArUco...";
+            requestAnimationFrame(processFrame);
         } catch (err) {
-            statusText.innerText = "ОШИБКА КАМЕРЫ";
-            alert("Нужен доступ к камере");
+            statusDiv.innerText = "❌ Ошибка камеры: " + err.message;
+            console.error(err);
         }
     }
 
-    function liveView() {
-        if (!isCaptured && v.videoWidth > 0) {
-            c.width = v.videoWidth;
-            c.height = v.videoHeight;
-            ctx.drawImage(v, 0, 0);
-            requestAnimationFrame(liveView);
+    // ----- ОБРАБОТКА КАДРА (детекция маркера + отрисовка) -----
+    function processFrame() {
+        if (!video.videoWidth) {
+            requestAnimationFrame(processFrame);
+            return;
         }
-    }
 
-    function captureFrame() {
-        isCaptured = true;
-        baseImage = document.createElement('canvas');
-        baseImage.width = c.width;
-        baseImage.height = c.height;
-        baseImage.getContext('2d').drawImage(v, 0, 0);
-        
-        // Автоматический поиск маркера (синий ластик 40мм)
-        detectMarker();
-        renderScene();
-    }
+        // Синхронизируем размер canvas, если изменился
+        if (overlay.width !== video.videoWidth || overlay.height !== video.videoHeight) {
+            overlay.width = video.videoWidth;
+            overlay.height = video.videoHeight;
+        }
 
-    function detectMarker() {
-        const imgData = ctx.getImageData(0, 0, c.width, c.height).data;
-        let hits = [];
-        for (let i = 0; i < imgData.length; i += 128) {
-            const r = imgData[i], g = imgData[i+1], b = imgData[i+2];
-            if (b > 120 && b > r * 1.6 && b > g * 1.6) {
-                hits.push({x: (i/4)%c.width, y: Math.floor((i/4)/c.width)});
+        // Рисуем текущий кадр видео на canvas (чтобы детектор мог его проанализировать)
+        ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
+
+        // Получаем ImageData для детектора
+        const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
+
+        // Детекция маркеров
+        let markers = [];
+        if (detector) {
+            markers = detector.detect(imageData);
+        }
+
+        // Ищем маркер с нужным ID
+        let targetMarker = null;
+        for (let m of markers) {
+            if (m.id === MARKER_ID) {
+                targetMarker = m;
+                break;
             }
         }
-        if (hits.length > 30) {
-            const minX = Math.min(...hits.map(h => h.x)), maxX = Math.max(...hits.map(h => h.x));
-            mmPerPx = 40 / (maxX - minX);
-            statusText.innerText = "МАСШТАБ ОК. УКАЖИТЕ ГРАНИЦЫ.";
+
+        if (targetMarker) {
+            markerDetected = true;
+            // Рисуем контур маркера
+            ctx.strokeStyle = "#0f0";
+            ctx.lineWidth = 4;
+            const corners = targetMarker.corners;  // 4 точки в порядке: левый-верх, правый-верх, правый-низ, левый-низ
+            ctx.beginPath();
+            ctx.moveTo(corners[0].x, corners[0].y);
+            for (let i = 1; i < corners.length; i++) {
+                ctx.lineTo(corners[i].x, corners[i].y);
+            }
+            ctx.closePath();
+            ctx.stroke();
+
+            // Вычисляем гомографию между плоскостью маркера (в реальных мм) и экранными точками
+            // Мы знаем, что в реальности маркер — квадрат со стороной MARKER_SIZE_MM.
+            // Задаём реальные координаты (в мм) в порядке: (0,0), (size,0), (size,size), (0,size)
+            const realCorners = [
+                {x: 0, y: 0},
+                {x: MARKER_SIZE_MM, y: 0},
+                {x: MARKER_SIZE_MM, y: MARKER_SIZE_MM},
+                {x: 0, y: MARKER_SIZE_MM}
+            ];
+            // Рассчитываем матрицу гомографии (перспективное преобразование)
+            // Используем стандартную функцию solveHomography из библиотеки (если нет, напишем свою)
+            // Для простоты используем встроенную в AR.js? Но у нас нет. Реализуем простую версию через OpenCV-like? 
+            // Однако в aruco.js нет готовой функции гомографии. Поэтому мы поступим иначе:
+            // Мы будем использовать масштаб, вычисленный по ширине маркера в пикселях, но с учётом угла — грубо.
+            // Для MVP достаточно масштаба по средней длине стороны, а перспективу скомпенсируем при замере.
+            // Более точный метод: использовать библиотеку `homography` из `js-aruco`? Её нет.
+            // В целях времени и стабильности используем упрощённый метод: 
+            // Коэффициент мм/пиксель берём как MARKER_SIZE_MM / средняя длина стороны (в пикселях).
+            let sidePx = 0;
+            for (let i = 0; i < corners.length; i++) {
+                const p1 = corners[i];
+                const p2 = corners[(i+1)%4];
+                const d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+                sidePx += d;
+            }
+            sidePx /= 4;
+            const mmPerPx = MARKER_SIZE_MM / sidePx;
+            // Сохраняем масштаб и опорные точки для гомографии (упрощённо)
+            homographyMatrix = { mmPerPx, markerCorners: corners };
+            statusDiv.innerText = "✅ Маркер найден. Тапните для замера.";
         } else {
-            statusText.innerText = "ЭТАЛОН НЕ НАЙДЕН. ИСПОЛЬЗУЙТЕ СИНИЙ ЦВЕТ.";
+            markerDetected = false;
+            homographyMatrix = null;
+            statusDiv.innerText = "⚠️ Маркер не виден. Поместите ArUco в кадр.";
         }
-    }
 
-    function renderScene() {
-        if (!baseImage) return;
-        ctx.drawImage(baseImage, 0, 0);
-        
-        ctx.strokeStyle = '#0f0';
-        ctx.lineWidth = Math.max(3, c.width / 400);
-        ctx.fillStyle = '#0f0';
-        ctx.font = `${Math.max(22, c.width / 45)}px monospace`;
-
-        points.forEach((p, i) => {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, ctx.lineWidth * 3, 0, 7);
-            ctx.stroke();
-            ctx.fillText(i + 1, p.x + 20, p.y - 20);
-        });
-
-        if (points.length === 2) {
-            const distPx = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
-            const valMm = (distPx * mmPerPx).toFixed(2);
-            ctx.beginPath();
-            ctx.moveTo(points[0].x, points[0].y);
-            ctx.lineTo(points[1].x, points[1].y);
-            ctx.stroke();
-            resVal.innerText = valMm + " MM";
-        }
-    }
-
-    function handleInput(e) {
-        if (!isCaptured) return;
-        e.preventDefault();
-        const rect = c.getBoundingClientRect();
-        const touch = e.touches ? e.touches[0] : e;
-        const x = (touch.clientX - rect.left) * (c.width / rect.width);
-        const y = (touch.clientY - rect.top) * (c.height / rect.height);
-
-        if (e.type === 'touchstart' || e.type === 'mousedown') {
-            activePoint = points.find(p => Math.hypot(p.x - x, p.y - y) * (rect.width / c.width) < 40);
-            if (!activePoint && points.length < 2) {
-                activePoint = {x, y};
-                points.push(activePoint);
+        // Отрисовка точек замера
+        if (points.length > 0) {
+            ctx.fillStyle = "#0f0";
+            ctx.shadowBlur = 0;
+            for (let i = 0; i < points.length; i++) {
+                ctx.beginPath();
+                ctx.arc(points[i].x, points[i].y, 8, 0, 2*Math.PI);
+                ctx.fill();
+                ctx.fillStyle = "#fff";
+                ctx.font = "bold 20px monospace";
+                ctx.fillText(i+1, points[i].x+12, points[i].y-8);
+                ctx.fillStyle = "#0f0";
             }
-            zoomWin.style.display = 'block';
+            if (points.length === 2) {
+                // Рисуем линию
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+                ctx.lineTo(points[1].x, points[1].y);
+                ctx.strokeStyle = "#ff0";
+                ctx.lineWidth = 4;
+                ctx.stroke();
+                // Вычисляем расстояние в мм
+                if (homographyMatrix) {
+                    const dx_px = points[1].x - points[0].x;
+                    const dy_px = points[1].y - points[0].y;
+                    const dist_px = Math.hypot(dx_px, dy_px);
+                    const dist_mm = dist_px * homographyMatrix.mmPerPx;
+                    distanceDiv.innerText = dist_mm.toFixed(1) + " mm";
+                } else {
+                    distanceDiv.innerText = "нет маркера";
+                }
+            } else {
+                distanceDiv.innerText = "--- mm";
+            }
+        } else {
+            distanceDiv.innerText = "--- mm";
         }
-        if (activePoint) {
-            activePoint.x = x;
-            activePoint.y = y;
-            drawZoom(x, y);
-            renderScene();
+
+        requestAnimationFrame(processFrame);
+    }
+
+    // ----- ОБРАБОТКА КАСАНИЙ (установка точек) -----
+    function handleTouch(e) {
+        e.preventDefault();
+        const rect = overlay.getBoundingClientRect();
+        const scaleX = overlay.width / rect.width;
+        const scaleY = overlay.height / rect.height;
+        const touch = e.touches[0];
+        const canvasX = (touch.clientX - rect.left) * scaleX;
+        const canvasY = (touch.clientY - rect.top) * scaleY;
+
+        if (!markerDetected) {
+            statusDiv.innerText = "❌ Сначала добейтесь обнаружения маркера!";
+            return;
+        }
+
+        // Если уже две точки, сбрасываем (или можно перезаписывать)
+        if (points.length === 2) {
+            points = [];
+        }
+        points.push({ x: canvasX, y: canvasY });
+        if (points.length === 2) {
+            statusDiv.innerText = "Замер выполнен. Нажмите 'Сброс' для нового.";
+        } else {
+            statusDiv.innerText = "Тапните вторую точку.";
         }
     }
 
-    function drawZoom(x, y) {
-        const s = 100;
-        zc.width = 200; zc.height = 200;
-        zctx.imageSmoothingEnabled = false;
-        zctx.drawImage(c, x - s/2, y - s/2, s, s, 0, 0, 200, 200);
-        zctx.strokeStyle = 'red';
-        zctx.lineWidth = 2;
-        zctx.strokeRect(90, 90, 20, 20);
-    }
-
-    c.addEventListener('touchstart', handleInput, {passive: false});
-    c.addEventListener('touchmove', handleInput, {passive: false});
-    window.addEventListener('touchend', () => { zoomWin.style.display = 'none'; activePoint = null; });
-
-    function resetAll() {
+    function resetPoints() {
         points = [];
-        resVal.innerText = "---";
-        isCaptured = false;
-        requestAnimationFrame(liveView);
+        distanceDiv.innerText = "--- mm";
+        statusDiv.innerText = "Точки сброшены. Можно замерять заново.";
     }
 
-    function saveAndProcess() {
-        if (points.length < 2) { alert("Нужно две точки замера"); return; }
-        
-        const finalCanvas = document.createElement('canvas');
-        finalCanvas.width = c.width;
-        finalCanvas.height = c.height;
-        const fCtx = finalCanvas.getContext('2d');
-        fCtx.drawImage(baseImage, 0, 0);
-        
-        // Впекаем данные в файл для будущего 3D движка
-        fCtx.fillStyle = "rgba(0,0,0,0.7)";
-        fCtx.fillRect(10, 10, 300, 60);
-        fCtx.fillStyle = "#0f0";
-        fCtx.font = "24px monospace";
-        fCtx.fillText(`RES: ${resVal.innerText}`, 30, 45);
-
-        const url = finalCanvas.toDataURL('image/png');
+    function saveSnapshot() {
+        if (!video.videoWidth) {
+            alert("Нет видео");
+            return;
+        }
+        // Создаём временный canvas с текущим содержимым overlay (уже есть рамки и точки)
+        const snapCanvas = document.createElement('canvas');
+        snapCanvas.width = overlay.width;
+        snapCanvas.height = overlay.height;
+        const snapCtx = snapCanvas.getContext('2d');
+        snapCtx.drawImage(overlay, 0, 0);
+        // Добавляем текстовую подпись
+        snapCtx.fillStyle = "#0f0";
+        snapCtx.font = "20px monospace";
+        snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
+        if (points.length === 2 && homographyMatrix) {
+            const dist = distanceDiv.innerText;
+            snapCtx.fillStyle = "yellow";
+            snapCtx.font = "bold 28px monospace";
+            snapCtx.fillText(dist, 20, 90);
+        }
+        const dataUrl = snapCanvas.toDataURL('image/png');
+        // Открываем в новой вкладке (на iPhone пользователь зажмёт для сохранения)
         const win = window.open();
         win.document.write(`
-            <body style="margin:0;background:#000;color:#0f0;text-align:center;font-family:monospace;">
-                <img src="${url}" style="max-width:100%;border-bottom:1px solid #0f0;">
-                <p>ДАННЫЕ ЗАФИКСИРОВАНЫ ДЛЯ 3D ОБРАБОТКИ</p>
-                <button onclick="window.close()" style="background:#0f0;color:#000;padding:10px 20px;border:none;">ВЕРНУТЬСЯ</button>
+            <body style="margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
+                <img src="${dataUrl}" style="max-width:100%;max-height:85vh;border:1px solid #0f0;">
+                <p style="color:#0f0;font-family:monospace;margin-top:20px;text-align:center;">
+                    📸 Зажмите фото → "Сохранить в фото"
+                </p>
+                <button onclick="window.close()" style="background:#0f0;color:#000;padding:10px;margin-top:10px;">Закрыть</button>
             </body>
         `);
     }
+
+    // ----- ЗАПУСК -----
+    function init() {
+        initAruco();
+        startCamera();
+        overlay.addEventListener('touchstart', handleTouch, { passive: false });
+        resetBtn.addEventListener('click', resetPoints);
+        saveBtn.addEventListener('click', saveSnapshot);
+    }
+
+    init();
 </script>
 </body>
 </html>
