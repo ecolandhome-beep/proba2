@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>MI-AI | ArUco измеритель</title>
-    <!-- библиотека ArUco (лёгкая, без OpenCV) -->
     <script src="https://cdn.jsdelivr.net/npm/aruco-3d@1.0.1/aruco.js"></script>
     <style>
         * {
@@ -38,7 +37,7 @@
             object-fit: contain;
         }
         canvas {
-            pointer-events: none;  /* чтобы касания проходили на слой ниже */
+            pointer-events: none;
         }
         .ui-panel {
             background: #0a0a0a;
@@ -84,6 +83,11 @@
             border-color: #f44;
             color: #f44;
         }
+        .start-btn {
+            background: #0f0;
+            color: #000;
+            border-color: #0f0;
+        }
     </style>
 </head>
 <body>
@@ -92,16 +96,17 @@
     <canvas id="overlay"></canvas>
 </div>
 <div class="ui-panel">
-    <div class="status" id="statusMsg">🔍 Поиск ArUco маркера...</div>
+    <div class="status" id="statusMsg">⚠️ Нажмите «СТАРТ» для доступа к камере</div>
     <div class="result" id="distanceResult">--- mm</div>
-    <button id="resetBtn" class="reset-btn">Сброс точек</button>
-    <button id="saveBtn">Сохранить фото</button>
+    <button id="startBtn" class="start-btn">▶ СТАРТ</button>
+    <button id="resetBtn" class="reset-btn">СБРОС ТОЧЕК</button>
+    <button id="saveBtn">СОХРАНИТЬ ФОТО</button>
 </div>
 
 <script>
     // ----- НАСТРОЙКИ ЭТАЛОНА -----
     const MARKER_SIZE_MM = 50;   // Реальный размер стороны маркера (мм). Измените под вашу распечатку.
-    const MARKER_ID = 0;         // ID маркера (можно любой, но в коде ищем конкретный)
+    const MARKER_ID = 0;         // ID маркера
 
     // ----- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -----
     let video = document.getElementById('video');
@@ -109,30 +114,30 @@
     let ctx = overlay.getContext('2d');
     let detector = null;
     let stream = null;
-
-    // Для замера
-    let points = [];           // массив из 1 или 2 точек {x, y} в координатах canvas (пиксели)
-    let homographyMatrix = null;   // матрица 3x3 для преобразования экран -> плоскость маркера
+    let points = [];
+    let homographyMatrix = null;   // { mmPerPx, markerCorners }
     let markerDetected = false;
+    let cameraActive = false;
 
     // DOM элементы
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
+    const startBtn = document.getElementById('startBtn');
     const resetBtn = document.getElementById('resetBtn');
     const saveBtn = document.getElementById('saveBtn');
 
     // ----- ИНИЦИАЛИЗАЦИЯ ArUco -----
     function initAruco() {
-        // Параметры детектора: словарь 4x4 (можно и 5x5, но 4x4 компактнее)
         detector = new AR.Detector({
             dictionary: "4x4",
-            markerSize: MARKER_SIZE_MM   // в мм, нужно для масштаба, но мы сами пересчитаем
+            markerSize: MARKER_SIZE_MM
         });
-        statusDiv.innerText = "📷 Камера: ожидание...";
+        console.log("ArUco detector ready");
     }
 
-    // ----- ЗАПУСК КАМЕРЫ -----
+    // ----- ЗАПУСК КАМЕРЫ (по кнопке) -----
     async function startCamera() {
+        if (cameraActive) return;
         try {
             const constraints = {
                 video: {
@@ -142,46 +147,41 @@
                 },
                 audio: false
             };
+            statusDiv.innerText = "⏳ Запрос разрешения...";
             stream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = stream;
             await video.play();
-            // Размеры canvas под видео
             overlay.width = video.videoWidth;
             overlay.height = video.videoHeight;
+            cameraActive = true;
             statusDiv.innerText = "🟢 Камера активна. Ищем ArUco...";
             requestAnimationFrame(processFrame);
         } catch (err) {
-            statusDiv.innerText = "❌ Ошибка камеры: " + err.message;
+            statusDiv.innerText = "❌ Ошибка доступа к камере: " + err.message;
             console.error(err);
         }
     }
 
-    // ----- ОБРАБОТКА КАДРА (детекция маркера + отрисовка) -----
+    // ----- ОБРАБОТКА КАДРА -----
     function processFrame() {
-        if (!video.videoWidth) {
+        if (!cameraActive || !video.videoWidth) {
             requestAnimationFrame(processFrame);
             return;
         }
 
-        // Синхронизируем размер canvas, если изменился
         if (overlay.width !== video.videoWidth || overlay.height !== video.videoHeight) {
             overlay.width = video.videoWidth;
             overlay.height = video.videoHeight;
         }
 
-        // Рисуем текущий кадр видео на canvas (чтобы детектор мог его проанализировать)
         ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
-
-        // Получаем ImageData для детектора
         const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
 
-        // Детекция маркеров
         let markers = [];
         if (detector) {
             markers = detector.detect(imageData);
         }
 
-        // Ищем маркер с нужным ID
         let targetMarker = null;
         for (let m of markers) {
             if (m.id === MARKER_ID) {
@@ -192,46 +192,24 @@
 
         if (targetMarker) {
             markerDetected = true;
-            // Рисуем контур маркера
             ctx.strokeStyle = "#0f0";
             ctx.lineWidth = 4;
-            const corners = targetMarker.corners;  // 4 точки в порядке: левый-верх, правый-верх, правый-низ, левый-низ
+            const corners = targetMarker.corners;
             ctx.beginPath();
             ctx.moveTo(corners[0].x, corners[0].y);
-            for (let i = 1; i < corners.length; i++) {
-                ctx.lineTo(corners[i].x, corners[i].y);
-            }
+            for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
             ctx.closePath();
             ctx.stroke();
 
-            // Вычисляем гомографию между плоскостью маркера (в реальных мм) и экранными точками
-            // Мы знаем, что в реальности маркер — квадрат со стороной MARKER_SIZE_MM.
-            // Задаём реальные координаты (в мм) в порядке: (0,0), (size,0), (size,size), (0,size)
-            const realCorners = [
-                {x: 0, y: 0},
-                {x: MARKER_SIZE_MM, y: 0},
-                {x: MARKER_SIZE_MM, y: MARKER_SIZE_MM},
-                {x: 0, y: MARKER_SIZE_MM}
-            ];
-            // Рассчитываем матрицу гомографии (перспективное преобразование)
-            // Используем стандартную функцию solveHomography из библиотеки (если нет, напишем свою)
-            // Для простоты используем встроенную в AR.js? Но у нас нет. Реализуем простую версию через OpenCV-like? 
-            // Однако в aruco.js нет готовой функции гомографии. Поэтому мы поступим иначе:
-            // Мы будем использовать масштаб, вычисленный по ширине маркера в пикселях, но с учётом угла — грубо.
-            // Для MVP достаточно масштаба по средней длине стороны, а перспективу скомпенсируем при замере.
-            // Более точный метод: использовать библиотеку `homography` из `js-aruco`? Её нет.
-            // В целях времени и стабильности используем упрощённый метод: 
-            // Коэффициент мм/пиксель берём как MARKER_SIZE_MM / средняя длина стороны (в пикселях).
+            // Вычисляем среднюю длину стороны в пикселях
             let sidePx = 0;
             for (let i = 0; i < corners.length; i++) {
                 const p1 = corners[i];
                 const p2 = corners[(i+1)%4];
-                const d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
-                sidePx += d;
+                sidePx += Math.hypot(p1.x - p2.x, p1.y - p2.y);
             }
             sidePx /= 4;
             const mmPerPx = MARKER_SIZE_MM / sidePx;
-            // Сохраняем масштаб и опорные точки для гомографии (упрощённо)
             homographyMatrix = { mmPerPx, markerCorners: corners };
             statusDiv.innerText = "✅ Маркер найден. Тапните для замера.";
         } else {
@@ -240,10 +218,9 @@
             statusDiv.innerText = "⚠️ Маркер не виден. Поместите ArUco в кадр.";
         }
 
-        // Отрисовка точек замера
+        // Рисуем точки и линию
         if (points.length > 0) {
             ctx.fillStyle = "#0f0";
-            ctx.shadowBlur = 0;
             for (let i = 0; i < points.length; i++) {
                 ctx.beginPath();
                 ctx.arc(points[i].x, points[i].y, 8, 0, 2*Math.PI);
@@ -253,24 +230,16 @@
                 ctx.fillText(i+1, points[i].x+12, points[i].y-8);
                 ctx.fillStyle = "#0f0";
             }
-            if (points.length === 2) {
-                // Рисуем линию
+            if (points.length === 2 && homographyMatrix) {
                 ctx.beginPath();
                 ctx.moveTo(points[0].x, points[0].y);
                 ctx.lineTo(points[1].x, points[1].y);
                 ctx.strokeStyle = "#ff0";
                 ctx.lineWidth = 4;
                 ctx.stroke();
-                // Вычисляем расстояние в мм
-                if (homographyMatrix) {
-                    const dx_px = points[1].x - points[0].x;
-                    const dy_px = points[1].y - points[0].y;
-                    const dist_px = Math.hypot(dx_px, dy_px);
-                    const dist_mm = dist_px * homographyMatrix.mmPerPx;
-                    distanceDiv.innerText = dist_mm.toFixed(1) + " mm";
-                } else {
-                    distanceDiv.innerText = "нет маркера";
-                }
+                const dist_px = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+                const dist_mm = dist_px * homographyMatrix.mmPerPx;
+                distanceDiv.innerText = dist_mm.toFixed(1) + " mm";
             } else {
                 distanceDiv.innerText = "--- mm";
             }
@@ -281,8 +250,16 @@
         requestAnimationFrame(processFrame);
     }
 
-    // ----- ОБРАБОТКА КАСАНИЙ (установка точек) -----
+    // ----- УСТАНОВКА ТОЧЕК (касания) -----
     function handleTouch(e) {
+        if (!cameraActive) {
+            statusDiv.innerText = "❌ Сначала нажмите «СТАРТ» и разрешите камеру.";
+            return;
+        }
+        if (!markerDetected) {
+            statusDiv.innerText = "❌ Сначала добейтесь обнаружения маркера!";
+            return;
+        }
         e.preventDefault();
         const rect = overlay.getBoundingClientRect();
         const scaleX = overlay.width / rect.width;
@@ -291,18 +268,10 @@
         const canvasX = (touch.clientX - rect.left) * scaleX;
         const canvasY = (touch.clientY - rect.top) * scaleY;
 
-        if (!markerDetected) {
-            statusDiv.innerText = "❌ Сначала добейтесь обнаружения маркера!";
-            return;
-        }
-
-        // Если уже две точки, сбрасываем (или можно перезаписывать)
-        if (points.length === 2) {
-            points = [];
-        }
+        if (points.length === 2) points = [];
         points.push({ x: canvasX, y: canvasY });
         if (points.length === 2) {
-            statusDiv.innerText = "Замер выполнен. Нажмите 'Сброс' для нового.";
+            statusDiv.innerText = "Замер выполнен. Нажмите «СБРОС ТОЧЕК» для нового.";
         } else {
             statusDiv.innerText = "Тапните вторую точку.";
         }
@@ -315,17 +284,15 @@
     }
 
     function saveSnapshot() {
-        if (!video.videoWidth) {
-            alert("Нет видео");
+        if (!cameraActive || !overlay.width) {
+            alert("Камера не активна");
             return;
         }
-        // Создаём временный canvas с текущим содержимым overlay (уже есть рамки и точки)
         const snapCanvas = document.createElement('canvas');
         snapCanvas.width = overlay.width;
         snapCanvas.height = overlay.height;
         const snapCtx = snapCanvas.getContext('2d');
         snapCtx.drawImage(overlay, 0, 0);
-        // Добавляем текстовую подпись
         snapCtx.fillStyle = "#0f0";
         snapCtx.font = "20px monospace";
         snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
@@ -336,7 +303,6 @@
             snapCtx.fillText(dist, 20, 90);
         }
         const dataUrl = snapCanvas.toDataURL('image/png');
-        // Открываем в новой вкладке (на iPhone пользователь зажмёт для сохранения)
         const win = window.open();
         win.document.write(`
             <body style="margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
@@ -349,10 +315,10 @@
         `);
     }
 
-    // ----- ЗАПУСК -----
+    // ----- ИНИЦИАЛИЗАЦИЯ -----
     function init() {
         initAruco();
-        startCamera();
+        startBtn.addEventListener('click', startCamera);
         overlay.addEventListener('touchstart', handleTouch, { passive: false });
         resetBtn.addEventListener('click', resetPoints);
         saveBtn.addEventListener('click', saveSnapshot);
