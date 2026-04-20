@@ -3,12 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI | ArUco измеритель</title>
-    <!-- Eruda: консоль на телефоне для отладки -->
+    <title>MI-AI | ArUco измеритель (рабочий)</title>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
     <script>eruda.init();</script>
-    <!-- библиотека ArUco -->
-    <script src="https://cdn.jsdelivr.net/npm/aruco-3d@1.0.1/aruco.js"></script>
+    <!-- Стабильная библиотека ArUco -->
+    <script src="https://rawgit.com/nicolas-grekas/ArUco.js/master/aruco.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -93,12 +92,24 @@
             color: #000;
             border-color: #0f0;
         }
+        .marker-guide {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 10px;
+            z-index: 100;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
 <div id="camera-container">
     <video id="video" playsinline muted autoplay></video>
     <canvas id="overlay"></canvas>
+    <div class="marker-guide" id="markerGuide">🎯 ArUco ID 0 (50x50 мм)</div>
 </div>
 <div class="ui-panel">
     <div class="status" id="statusMsg">⚠️ Нажмите «СТАРТ» для доступа к камере</div>
@@ -110,40 +121,36 @@
 
 <script>
     // ----- НАСТРОЙКИ ЭТАЛОНА -----
-    const MARKER_SIZE_MM = 50;   // Реальный размер стороны маркера (мм)
-    const MARKER_ID = 0;         // ID маркера
+    const MARKER_SIZE_MM = 50;   // реальный размер стороны маркера (мм)
+    const MARKER_ID = 0;         // ID маркера (должен совпадать с распечатанным)
 
     // ----- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ -----
     let video = document.getElementById('video');
     let overlay = document.getElementById('overlay');
     let ctx = overlay.getContext('2d');
-    let detector = null;
     let stream = null;
     let points = [];
-    let homographyMatrix = null;
+    let scaleMMperPX = null;
     let markerDetected = false;
     let cameraActive = false;
+    let detector = null;
 
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
 
-    // ----- ИНИЦИАЛИЗАЦИЯ ArUco -----
+    // ----- ИНИЦИАЛИЗАЦИЯ ArUco детектора -----
     function initAruco() {
+        // Создаём словарь 4x4 (ID 0)
         detector = new AR.Detector({
             dictionary: "4x4",
             markerSize: MARKER_SIZE_MM
         });
         console.log("ArUco detector ready");
-        statusDiv.innerText = "⚠️ Нажмите «СТАРТ» для доступа к камере";
     }
 
     // ----- ЗАПУСК КАМЕРЫ (по кнопке) -----
     async function startCamera() {
-        console.log("startCamera вызвана");
-        if (cameraActive) {
-            console.log("Камера уже активна");
-            return;
-        }
+        if (cameraActive) return;
         try {
             const constraints = {
                 video: {
@@ -154,19 +161,17 @@
                 audio: false
             };
             statusDiv.innerText = "⏳ Запрос разрешения...";
-            console.log("Запрашиваем getUserMedia");
             stream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = stream;
             await video.play();
             overlay.width = video.videoWidth;
             overlay.height = video.videoHeight;
             cameraActive = true;
-            statusDiv.innerText = "🟢 Камера активна. Ищем ArUco...";
-            console.log("Камера запущена, размеры:", overlay.width, overlay.height);
+            statusDiv.innerText = "🟢 Камера активна. Ищем ArUco маркер...";
             requestAnimationFrame(processFrame);
         } catch (err) {
             statusDiv.innerText = "❌ Ошибка доступа к камере: " + err.message;
-            console.error("Ошибка getUserMedia:", err);
+            console.error(err);
         }
     }
 
@@ -185,6 +190,7 @@
         ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
         const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
 
+        // Детекция маркеров
         let markers = [];
         if (detector) {
             markers = detector.detect(imageData);
@@ -200,9 +206,10 @@
 
         if (targetMarker) {
             markerDetected = true;
+            const corners = targetMarker.corners; // массив из 4 точек {x, y}
+            // Рисуем рамку
             ctx.strokeStyle = "#0f0";
             ctx.lineWidth = 4;
-            const corners = targetMarker.corners;
             ctx.beginPath();
             ctx.moveTo(corners[0].x, corners[0].y);
             for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
@@ -217,16 +224,15 @@
                 sidePx += Math.hypot(p1.x - p2.x, p1.y - p2.y);
             }
             sidePx /= 4;
-            const mmPerPx = MARKER_SIZE_MM / sidePx;
-            homographyMatrix = { mmPerPx, markerCorners: corners };
+            scaleMMperPX = MARKER_SIZE_MM / sidePx;
             statusDiv.innerText = "✅ Маркер найден. Тапните для замера.";
         } else {
             markerDetected = false;
-            homographyMatrix = null;
+            scaleMMperPX = null;
             statusDiv.innerText = "⚠️ Маркер не виден. Поместите ArUco в кадр.";
         }
 
-        // Рисуем точки и линию
+        // Рисуем точки замера
         if (points.length > 0) {
             ctx.fillStyle = "#0f0";
             for (let i = 0; i < points.length; i++) {
@@ -238,7 +244,7 @@
                 ctx.fillText(i+1, points[i].x+12, points[i].y-8);
                 ctx.fillStyle = "#0f0";
             }
-            if (points.length === 2 && homographyMatrix) {
+            if (points.length === 2 && scaleMMperPX) {
                 ctx.beginPath();
                 ctx.moveTo(points[0].x, points[0].y);
                 ctx.lineTo(points[1].x, points[1].y);
@@ -246,7 +252,7 @@
                 ctx.lineWidth = 4;
                 ctx.stroke();
                 const dist_px = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
-                const dist_mm = dist_px * homographyMatrix.mmPerPx;
+                const dist_mm = dist_px * scaleMMperPX;
                 distanceDiv.innerText = dist_mm.toFixed(1) + " mm";
             } else {
                 distanceDiv.innerText = "--- mm";
@@ -260,7 +266,6 @@
 
     // ----- УСТАНОВКА ТОЧЕК (касания) -----
     function handleTouch(e) {
-        console.log("touch event, cameraActive=", cameraActive, "markerDetected=", markerDetected);
         if (!cameraActive) {
             statusDiv.innerText = "❌ Сначала нажмите «СТАРТ» и разрешите камеру.";
             return;
@@ -305,7 +310,7 @@
         snapCtx.fillStyle = "#0f0";
         snapCtx.font = "20px monospace";
         snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
-        if (points.length === 2 && homographyMatrix) {
+        if (points.length === 2 && scaleMMperPX) {
             const dist = distanceDiv.innerText;
             snapCtx.fillStyle = "yellow";
             snapCtx.font = "bold 28px monospace";
@@ -328,7 +333,6 @@
     function init() {
         initAruco();
         overlay.addEventListener('touchstart', handleTouch, { passive: false });
-        // кнопки уже имеют onclick в HTML
     }
 
     init();
