@@ -3,21 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI | Гомография (точные размеры с любого ракурса)</title>
+    <title>MI-AI | Авто-детекция (лёгкая)</title>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
     <script>eruda.init();</script>
     <style>
         * { box-sizing: border-box; user-select: none; -webkit-tap-highlight-color: transparent; }
         body { margin: 0; background: #000; color: #0f0; font-family: monospace; height: 100dvh; display: flex; flex-direction: column; }
-        #camera-container { flex: 1; position: relative; background: #111; overflow: hidden; touch-action: none; }
+        #camera-container { flex: 1; position: relative; background: #111; overflow: hidden; }
         video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
-        canvas { pointer-events: auto; }
         .ui-panel { background: #0a0a0a; border-top: 2px solid #0f0; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         button { background: #000; color: #0f0; border: 2px solid #0f0; font-family: inherit; font-weight: bold; font-size: 14px; padding: 12px; border-radius: 8px; text-transform: uppercase; cursor: pointer; }
         button:active { background: #0f0; color: #000; }
         .status { grid-column: span 2; font-size: 12px; text-align: center; padding: 6px; background: #001500; border: 1px solid #0f0; border-radius: 6px; }
-        .result { grid-column: span 2; font-size: 20px; text-align: center; font-weight: bold; }
+        .result { grid-column: span 2; font-size: 24px; text-align: center; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -33,30 +32,36 @@
 </div>
 
 <script>
-    const QR_SIZE_MM = 46;   // реальный размер QR-маркера (сторона)
-
+    const QR_SIZE_MM = 46;
     let video = document.getElementById('video');
     let overlay = document.getElementById('overlay');
     let ctx = overlay.getContext('2d');
     let cameraActive = false;
     let animationId = null;
-
     let qrDetected = false;
-    let qrCornersPx = null;      // 4 точки в пикселях (на экране)
-    let homography = null;        // матрица 3x3 (гомография)
-    let allContours = [];
-    let selectedIndex = -1;
+    let homography = null;
+    let objectRect = null;   // {x, y, width, height} в пикселях (оригинальные координаты)
 
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
 
+    // Утилита для вычисления гомографии (DLT, требуется numeric.js)
+    // Подключаем numeric через CDN
+    function loadNumeric() {
+        return new Promise((resolve) => {
+            if (window.numeric) { resolve(); return; }
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js';
+            script.onload = resolve;
+            document.head.appendChild(script);
+        });
+    }
+
     async function startCamera() {
         if (cameraActive) return;
+        await loadNumeric();
         try {
-            const constraints = {
-                video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
-                audio: false
-            };
+            const constraints = { video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
             statusDiv.innerText = "⏳ Запрос...";
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = stream;
@@ -72,8 +77,8 @@
         }
     }
 
-    // Детекция QR и вычисление гомографии
-    function detectAndComputeHomography(imageData, width, height) {
+    // Детекция QR и гомография
+    function detectQRAndHomography(imageData, width, height) {
         const code = jsQR(imageData.data, width, height, { inversionAttempts: "dontInvert" });
         if (!code) return null;
         const cornersPx = [
@@ -82,76 +87,63 @@
             code.location.bottomRightCorner,
             code.location.bottomLeftCorner
         ];
-        // Реальные координаты углов QR в мм (плоскость маркера)
         const realCorners = [
             {x: 0, y: 0},
             {x: QR_SIZE_MM, y: 0},
             {x: QR_SIZE_MM, y: QR_SIZE_MM},
             {x: 0, y: QR_SIZE_MM}
         ];
-        // Вычисляем гомографию (решаем систему H * real = px)
-        // Для 4 точек используем стандартный алгоритм DLT.
-        const H = computeHomography(cornersPx, realCorners);
-        if (!H) return null;
-        return { cornersPx, homography: H };
-    }
-
-    // Функция вычисления гомографии (DLT для 4 точек)
-    function computeHomography(dst, src) {
-        // src – реальные координаты (мм), dst – пиксельные
+        // Вычисляем гомографию через numeric.svd
         const A = [];
         for (let i = 0; i < 4; i++) {
-            const [x, y] = [src[i].x, src[i].y];
-            const [u, v] = [dst[i].x, dst[i].y];
+            const [x, y] = [realCorners[i].x, realCorners[i].y];
+            const [u, v] = [cornersPx[i].x, cornersPx[i].y];
             A.push([-x, -y, -1, 0, 0, 0, u*x, u*y, u]);
             A.push([0, 0, 0, -x, -y, -1, v*x, v*y, v]);
         }
-        // Решаем Ah = 0
         const svd = numeric.svd(A);
-        const H = svd.V.slice(-1)[0]; // последний правый сингулярный вектор
-        return [
+        const H = svd.V.slice(-1)[0];
+        const homography = [
             [H[0], H[1], H[2]],
             [H[3], H[4], H[5]],
             [H[6], H[7], H[8]]
         ];
+        return { cornersPx, homography };
     }
 
-    // Применение гомографии к точке (x,y) – возвращает реальные координаты (мм)
-    function applyHomography(H, x, y) {
-        const z = H[2][0]*x + H[2][1]*y + H[2][2];
-        const u = (H[0][0]*x + H[0][1]*y + H[0][2]) / z;
-        const v = (H[1][0]*x + H[1][1]*y + H[1][2]) / z;
-        return { x: u, y: v };
-    }
-
-    // Поиск всех прямоугольных контуров (повёрнутых)
-    function findRotatedRects(imageData, width, height) {
-        // Преобразование в灰度
-        const gray = new Uint8ClampedArray(width * height);
-        for (let i = 0; i < imageData.data.length; i += 4) {
-            const r = imageData.data[i];
-            const g = imageData.data[i+1];
-            const b = imageData.data[i+2];
-            gray[i/4] = 0.299 * r + 0.587 * g + 0.114 * b;
-        }
-        // Детектор границ (Canny-like)
-        const edges = new Uint8ClampedArray(width * height);
-        for (let y = 1; y < height-1; y++) {
-            for (let x = 1; x < width-1; x++) {
-                const idx = y * width + x;
-                const gx = gray[idx+1] - gray[idx-1];
-                const gy = gray[idx+width] - gray[idx-width];
-                const mag = Math.hypot(gx, gy);
-                edges[idx] = mag > 40 ? 255 : 0;
+    // Лёгкий поиск объекта: бинаризация по яркости + поиск самого большого связного компонента (BFS)
+    // Работаем на уменьшенном изображении (scale=0.5) для скорости.
+    function findLargestBlob(imageData, width, height, scale=0.5) {
+        const smallW = Math.floor(width * scale);
+        const smallH = Math.floor(height * scale);
+        // Уменьшаем изображение (простая выборка каждого 2-го пикселя)
+        const smallData = new Uint8ClampedArray(smallW * smallH);
+        for (let y = 0; y < smallH; y++) {
+            for (let x = 0; x < smallW; x++) {
+                const srcX = Math.floor(x / scale);
+                const srcY = Math.floor(y / scale);
+                const idx = (srcY * width + srcX) * 4;
+                const r = imageData.data[idx];
+                const g = imageData.data[idx+1];
+                const b = imageData.data[idx+2];
+                const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+                smallData[y * smallW + x] = brightness;
             }
         }
-        // Поиск связных компонентов (BFS)
-        const visited = new Uint8Array(width * height);
-        const components = [];
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const idx = y * width + x;
-                if (edges[idx] && !visited[idx]) {
+        // Бинаризация по порогу (адаптивный: средняя яркость)
+        let sum = 0;
+        for (let i = 0; i < smallData.length; i++) sum += smallData[i];
+        const threshold = sum / smallData.length;
+        const binary = new Uint8Array(smallW * smallH);
+        for (let i = 0; i < smallData.length; i++) binary[i] = smallData[i] < threshold ? 255 : 0;
+        // BFS для поиска компонентов
+        const visited = new Uint8Array(smallW * smallH);
+        let bestArea = 0;
+        let bestRect = null;
+        for (let y = 0; y < smallH; y++) {
+            for (let x = 0; x < smallW; x++) {
+                const idx = y * smallW + x;
+                if (binary[idx] === 255 && !visited[idx]) {
                     const queue = [{x, y}];
                     const points = [];
                     visited[idx] = 1;
@@ -162,9 +154,9 @@
                             for (let dx = -1; dx <= 1; dx++) {
                                 if (dx === 0 && dy === 0) continue;
                                 const nx = p.x + dx, ny = p.y + dy;
-                                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                                    const nidx = ny * width + nx;
-                                    if (edges[nidx] && !visited[nidx]) {
+                                if (nx >= 0 && nx < smallW && ny >= 0 && ny < smallH) {
+                                    const nidx = ny * smallW + nx;
+                                    if (binary[nidx] === 255 && !visited[nidx]) {
                                         visited[nidx] = 1;
                                         queue.push({x: nx, y: ny});
                                     }
@@ -172,103 +164,55 @@
                             }
                         }
                     }
-                    if (points.length > 200) {
-                        // Находим минимальный описанный повёрнутый прямоугольник (convex hull + rotating calipers)
-                        const rotatedRect = minAreaRect(points);
-                        if (rotatedRect) {
-                            components.push(rotatedRect);
+                    if (points.length > bestArea && points.length > 100) {
+                        bestArea = points.length;
+                        let minX = smallW, maxX = 0, minY = smallH, maxY = 0;
+                        for (let p of points) {
+                            minX = Math.min(minX, p.x);
+                            maxX = Math.max(maxX, p.x);
+                            minY = Math.min(minY, p.y);
+                            maxY = Math.max(maxY, p.y);
                         }
+                        bestRect = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
                     }
                 }
             }
         }
-        // Сортируем по площади
-        components.sort((a,b) => (b.width*b.height) - (a.width*a.height));
-        return components;
+        if (bestRect) {
+            // Масштабируем обратно
+            return {
+                x: bestRect.x / scale,
+                y: bestRect.y / scale,
+                width: bestRect.width / scale,
+                height: bestRect.height / scale
+            };
+        }
+        return null;
     }
 
-    // Функция minAreaRect (convex hull + rotating calipers)
-    function minAreaRect(points) {
-        if (points.length < 3) return null;
-        // Convex hull (Graham scan)
-        function cross(o, a, b) {
-            return (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x);
-        }
-        let pts = points.map(p => ({x: p.x, y: p.y}));
-        pts.sort((a,b) => a.x!==b.x ? a.x-b.x : a.y-b.y);
-        const lower = [];
-        for (let p of pts) {
-            while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
-            lower.push(p);
-        }
-        const upper = [];
-        for (let i = pts.length-1; i >=0; i--) {
-            const p = pts[i];
-            while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
-            upper.push(p);
-        }
-        const hull = [...lower.slice(0, lower.length-1), ...upper.slice(0, upper.length-1)];
-        if (hull.length < 3) return null;
-
-        // Rotating calipers
-        let bestArea = Infinity;
-        let bestRect = null;
-        const n = hull.length;
-        for (let i = 0; i < n; i++) {
-            const p1 = hull[i];
-            const p2 = hull[(i+1)%n];
-            const edge = {x: p2.x - p1.x, y: p2.y - p1.y};
-            const len = Math.hypot(edge.x, edge.y);
-            const dir = {x: edge.x/len, y: edge.y/len};
-            const perp = {x: -dir.y, y: dir.x};
-            let minProj = Infinity, maxProj = -Infinity;
-            let minPerp = Infinity, maxPerp = -Infinity;
-            for (let pt of hull) {
-                const proj = dir.x*(pt.x-p1.x) + dir.y*(pt.y-p1.y);
-                const perpProj = perp.x*(pt.x-p1.x) + perp.y*(pt.y-p1.y);
-                minProj = Math.min(minProj, proj);
-                maxProj = Math.max(maxProj, proj);
-                minPerp = Math.min(minPerp, perpProj);
-                maxPerp = Math.max(maxPerp, perpProj);
-            }
-            const width = maxProj - minProj;
-            const height = maxPerp - minPerp;
-            const area = width * height;
-            if (area < bestArea) {
-                bestArea = area;
-                const centerX = p1.x + dir.x*(minProj + width/2) + perp.x*(minPerp + height/2);
-                const centerY = p1.y + dir.y*(minProj + width/2) + perp.y*(minPerp + height/2);
-                const corners = [
-                    {x: centerX + dir.x*width/2 + perp.x*height/2, y: centerY + dir.y*width/2 + perp.y*height/2},
-                    {x: centerX - dir.x*width/2 + perp.x*height/2, y: centerY - dir.y*width/2 + perp.y*height/2},
-                    {x: centerX - dir.x*width/2 - perp.x*height/2, y: centerY - dir.y*width/2 - perp.y*height/2},
-                    {x: centerX + dir.x*width/2 - perp.x*height/2, y: centerY + dir.y*width/2 - perp.y*height/2}
-                ];
-                bestRect = {
-                    center: {x: centerX, y: centerY},
-                    width: width,
-                    height: height,
-                    angle: Math.atan2(dir.y, dir.x),
-                    corners: corners
-                };
-            }
-        }
-        return bestRect;
+    // Применение гомографии к углам прямоугольника -> вычисление длины и ширины в мм
+    function getRectRealSize(rect, homography) {
+        // Углы прямоугольника (повёрнутого нет, используем axis-aligned для простоты)
+        const corners = [
+            {x: rect.x, y: rect.y},
+            {x: rect.x + rect.width, y: rect.y},
+            {x: rect.x + rect.width, y: rect.y + rect.height},
+            {x: rect.x, y: rect.y + rect.height}
+        ];
+        const transformed = corners.map(p => applyHomography(homography, p.x, p.y));
+        const widthReal = Math.hypot(transformed[1].x - transformed[0].x, transformed[1].y - transformed[0].y);
+        const heightReal = Math.hypot(transformed[2].x - transformed[1].x, transformed[2].y - transformed[1].y);
+        return { width: widthReal, height: heightReal };
     }
 
-    // Отрисовка повёрнутого прямоугольника
-    function drawRotatedRect(ctx, rect, color, lineWidth=4) {
-        if (!rect || !rect.corners) return;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = lineWidth;
-        ctx.beginPath();
-        ctx.moveTo(rect.corners[0].x, rect.corners[0].y);
-        for (let i=1; i<rect.corners.length; i++) ctx.lineTo(rect.corners[i].x, rect.corners[i].y);
-        ctx.closePath();
-        ctx.stroke();
+    function applyHomography(H, x, y) {
+        const z = H[2][0]*x + H[2][1]*y + H[2][2];
+        const u = (H[0][0]*x + H[0][1]*y + H[0][2]) / z;
+        const v = (H[1][0]*x + H[1][1]*y + H[1][2]) / z;
+        return { x: u, y: v };
     }
 
-    // Основной цикл
+    let frameSkip = 0;
     function processFrame() {
         if (!cameraActive || !video.videoWidth) {
             animationId = requestAnimationFrame(processFrame);
@@ -281,21 +225,21 @@
         ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
         const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
 
-        // 1. Детекция QR и гомография
-        const qr = detectAndComputeHomography(imageData, overlay.width, overlay.height);
+        // 1. QR и гомография (каждый кадр, это быстро)
+        const qr = detectQRAndHomography(imageData, overlay.width, overlay.height);
         if (qr) {
             qrDetected = true;
-            qrCornersPx = qr.cornersPx;
             homography = qr.homography;
-            // Рисуем рамку QR
+            // Рисуем зелёную рамку QR (по углам)
+            const corners = qr.cornersPx;
             ctx.strokeStyle = "#0f0";
             ctx.lineWidth = 3;
             ctx.beginPath();
-            ctx.moveTo(qrCornersPx[0].x, qrCornersPx[0].y);
-            for (let i=1; i<qrCornersPx.length; i++) ctx.lineTo(qrCornersPx[i].x, qrCornersPx[i].y);
+            ctx.moveTo(corners[0].x, corners[0].y);
+            for (let i=1; i<corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
             ctx.closePath();
             ctx.stroke();
-            statusDiv.innerText = "✅ QR найден. Ищем объекты...";
+            statusDiv.innerText = "✅ QR найден. Ищем объект...";
         } else {
             qrDetected = false;
             homography = null;
@@ -304,78 +248,46 @@
             return;
         }
 
-        // 2. Поиск прямоугольных контуров
-        if (homography) {
-            allContours = findRotatedRects(imageData, overlay.width, overlay.height);
-            // Отфильтровываем контуры, которые пересекаются с QR
-            if (qrCornersPx) {
-                const qrMinX = Math.min(...qrCornersPx.map(p=>p.x));
-                const qrMaxX = Math.max(...qrCornersPx.map(p=>p.x));
-                const qrMinY = Math.min(...qrCornersPx.map(p=>p.y));
-                const qrMaxY = Math.max(...qrCornersPx.map(p=>p.y));
-                allContours = allContours.filter(cont => {
-                    const cx = cont.center.x;
-                    const cy = cont.center.y;
-                    return !(cx > qrMinX && cx < qrMaxX && cy > qrMinY && cy < qrMaxY);
-                });
-            }
-            if (allContours.length > 0) {
-                allContours.sort((a,b) => (b.width*b.height) - (a.width*a.height));
-                selectedIndex = 0;
-                const best = allContours[0];
-                // Преобразуем углы объекта через гомографию
-                const transformedCorners = best.corners.map(p => applyHomography(homography, p.x, p.y));
-                // Вычисляем длину и ширину в реальных мм (расстояния между преобразованными углами)
-                const widthReal = Math.hypot(transformedCorners[1].x - transformedCorners[0].x,
-                                             transformedCorners[1].y - transformedCorners[0].y);
-                const heightReal = Math.hypot(transformedCorners[2].x - transformedCorners[1].x,
-                                              transformedCorners[2].y - transformedCorners[1].y);
-                distanceDiv.innerText = `${widthReal.toFixed(1)} x ${heightReal.toFixed(1)} mm`;
-                statusDiv.innerText = "Объект найден. Нажмите Сохранить.";
-                // Рисуем повёрнутую рамку (в пиксельных координатах)
-                drawRotatedRect(ctx, best, "#ff0", 4);
+        // 2. Поиск объекта (каждый 5-й кадр, на уменьшенном изображении)
+        frameSkip++;
+        if (frameSkip >= 5) {
+            frameSkip = 0;
+            const rect = findLargestBlob(imageData, overlay.width, overlay.height, 0.5);
+            if (rect && homography) {
+                // Исключаем область QR (приблизительно)
+                const qrCenterX = qr.cornersPx.reduce((s,p)=>s+p.x,0)/4;
+                const qrCenterY = qr.cornersPx.reduce((s,p)=>s+p.y,0)/4;
+                const rectCenterX = rect.x + rect.width/2;
+                const rectCenterY = rect.y + rect.height/2;
+                const distToQR = Math.hypot(rectCenterX - qrCenterX, rectCenterY - qrCenterY);
+                if (distToQR > 100 && rect.width > 30 && rect.height > 30) {
+                    objectRect = rect;
+                    const real = getRectRealSize(rect, homography);
+                    distanceDiv.innerText = `${real.width.toFixed(1)} x ${real.height.toFixed(1)} mm`;
+                    statusDiv.innerText = "Объект найден. Нажмите Сохранить.";
+                    // Рисуем жёлтую рамку
+                    ctx.strokeStyle = "#ff0";
+                    ctx.lineWidth = 4;
+                    ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+                } else {
+                    objectRect = null;
+                    distanceDiv.innerText = "--- mm";
+                    statusDiv.innerText = "Объект не найден (слишком близко к QR или мал).";
+                }
             } else {
-                selectedIndex = -1;
+                objectRect = null;
                 distanceDiv.innerText = "--- mm";
-                statusDiv.innerText = "Объект не найден.";
+                statusDiv.innerText = "Объект не найден. Наведите на контрастный предмет.";
             }
+        } else if (objectRect) {
+            // Просто перерисовываем рамку
+            ctx.strokeStyle = "#ff0";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(objectRect.x, objectRect.y, objectRect.width, objectRect.height);
         }
 
         animationId = requestAnimationFrame(processFrame);
     }
-
-    // Тап для выбора другого объекта
-    overlay.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        if (!homography || allContours.length === 0) return;
-        const rect = overlay.getBoundingClientRect();
-        const touch = e.touches[0];
-        const canvasX = (touch.clientX - rect.left) * (overlay.width / rect.width);
-        const canvasY = (touch.clientY - rect.top) * (overlay.height / rect.height);
-        let bestIdx = -1;
-        let bestDist = Infinity;
-        for (let i=0; i<allContours.length; i++) {
-            const c = allContours[i];
-            const dx = c.center.x - canvasX;
-            const dy = c.center.y - canvasY;
-            const dist = Math.hypot(dx, dy);
-            if (dist < bestDist) {
-                bestDist = dist;
-                bestIdx = i;
-            }
-        }
-        if (bestIdx !== -1 && bestDist < 100) {
-            selectedIndex = bestIdx;
-            const sel = allContours[selectedIndex];
-            const transformedCorners = sel.corners.map(p => applyHomography(homography, p.x, p.y));
-            const widthReal = Math.hypot(transformedCorners[1].x - transformedCorners[0].x,
-                                         transformedCorners[1].y - transformedCorners[0].y);
-            const heightReal = Math.hypot(transformedCorners[2].x - transformedCorners[1].x,
-                                          transformedCorners[2].y - transformedCorners[1].y);
-            distanceDiv.innerText = `${widthReal.toFixed(1)} x ${heightReal.toFixed(1)} mm`;
-            statusDiv.innerText = "Выбран другой объект.";
-        }
-    });
 
     function saveSnapshot() {
         if (!cameraActive || !overlay.width) {
@@ -390,14 +302,12 @@
         snapCtx.fillStyle = "#0f0";
         snapCtx.font = "20px monospace";
         snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
-        if (selectedIndex !== -1 && allContours[selectedIndex] && homography) {
-            const sel = allContours[selectedIndex];
-            const transformed = sel.corners.map(p => applyHomography(homography, p.x, p.y));
-            const w = Math.hypot(transformed[1].x - transformed[0].x, transformed[1].y - transformed[0].y).toFixed(1);
-            const h = Math.hypot(transformed[2].x - transformed[1].x, transformed[2].y - transformed[1].y).toFixed(1);
+        if (objectRect && homography) {
+            const real = getRectRealSize(objectRect, homography);
+            const sizeText = `${real.width.toFixed(1)} x ${real.height.toFixed(1)} mm`;
             snapCtx.fillStyle = "yellow";
             snapCtx.font = "bold 28px monospace";
-            snapCtx.fillText(`${w} x ${h} mm`, 20, 90);
+            snapCtx.fillText(sizeText, 20, 90);
         }
         const dataUrl = snapCanvas.toDataURL('image/png');
         const win = window.open();
