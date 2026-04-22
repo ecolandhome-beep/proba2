@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI | Сбор датасета для 3D</title>
+    <title>MI-AI | Автоизмеритель прямоугольников</title>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
     <script>eruda.init();</script>
     <style>
@@ -13,15 +12,13 @@
         body { margin: 0; background: #000; color: #0f0; font-family: monospace; height: 100dvh; display: flex; flex-direction: column; }
         #camera-container { flex: 1; position: relative; background: #111; overflow: hidden; touch-action: none; }
         video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
-        canvas { /* события включены */ }
-        .ui-panel { background: #0a0a0a; border-top: 2px solid #0f0; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        button { background: #000; color: #0f0; border: 2px solid #0f0; font-family: inherit; font-weight: bold; font-size: 12px; padding: 10px; border-radius: 8px; text-transform: uppercase; cursor: pointer; }
+        canvas { pointer-events: auto; }  /* для тапов */
+        .ui-panel { background: #0a0a0a; border-top: 2px solid #0f0; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        button { background: #000; color: #0f0; border: 2px solid #0f0; font-family: inherit; font-weight: bold; font-size: 14px; padding: 12px; border-radius: 8px; text-transform: uppercase; cursor: pointer; }
         button:active { background: #0f0; color: #000; }
-        .status { grid-column: span 2; font-size: 11px; text-align: center; padding: 4px; background: #001500; border: 1px solid #0f0; border-radius: 6px; }
+        .status { grid-column: span 2; font-size: 12px; text-align: center; padding: 6px; background: #001500; border: 1px solid #0f0; border-radius: 6px; }
         .result { grid-column: span 2; font-size: 20px; text-align: center; font-weight: bold; }
-        .badge { display: inline-block; background: #0f0; color: #000; padding: 2px 8px; border-radius: 20px; font-size: 12px; margin-left: 6px; }
         .reset-btn { border-color: #f44; color: #f44; }
-        .save-btn { border-color: #ff0; color: #ff0; }
     </style>
 </head>
 <body>
@@ -33,31 +30,31 @@
     <div class="status" id="statusMsg">⚠️ Нажмите «СТАРТ»</div>
     <div class="result" id="distanceResult">--- mm</div>
     <button id="startBtn" style="background:#0f0;color:#000;" onclick="startCamera()">▶ СТАРТ</button>
-    <button id="resetPointsBtn" class="reset-btn" onclick="resetPoints()">СБРОС ТОЧЕК</button>
-    <button id="addFrameBtn" class="save-btn" onclick="addFrame()">📸 ДОБАВИТЬ КАДР</button>
-    <button id="exportBtn" onclick="exportDataset()">📦 ЭКСПОРТ</button>
-    <button id="clearFramesBtn" class="reset-btn" onclick="clearFrames()">🗑 ОЧИСТИТЬ КАДРЫ</button>
+    <button id="saveBtn" onclick="saveSnapshot()">СОХРАНИТЬ ФОТО</button>
 </div>
 
 <script>
-    // ========== НАСТРОЙКИ ==========
-    const QR_SIZE_MM = 46;   // реальный размер стороны QR-маркера (мм)
+    // РЕАЛЬНЫЙ РАЗМЕР QR-МАРКЕРА (сторона в мм)
+    const QR_SIZE_MM = 46;   // измените под вашу распечатку
 
-    // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
     let video = document.getElementById('video');
     let overlay = document.getElementById('overlay');
     let ctx = overlay.getContext('2d');
     let stream = null;
-    let points = [];               // точки замера (0,1 или 2)
-    let scaleMMperPX = null;      // мм/пиксель
-    let markerDetected = false;
     let cameraActive = false;
     let animationId = null;
-    let frames = [];               // массив сохранённых canvas (DataURL)
+
+    // Данные QR
+    let qrDetected = false;
+    let qrCorners = null;     // массив из 4 точек {x, y}
+    let scaleMMperPX = null;   // мм/пиксель (вычисляется по QR)
+
+    // Данные выбранного объекта
+    let selectedContour = null;   // массив точек (4 угла) в пикселях
+    let objectWidth = 0, objectHeight = 0; // в мм
 
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
-    const addFrameBtn = document.getElementById('addFrameBtn');
 
     // ========== КАМЕРА ==========
     async function startCamera() {
@@ -82,7 +79,138 @@
         }
     }
 
-    // ========== ДЕТЕКЦИЯ QR И РИСОВАНИЕ ==========
+    // ========== ДЕТЕКЦИЯ QR ==========
+    function detectQR(imageData, width, height) {
+        const code = jsQR(imageData.data, width, height, { inversionAttempts: "dontInvert" });
+        if (!code) return null;
+        const corners = [
+            code.location.topLeftCorner,
+            code.location.topRightCorner,
+            code.location.bottomRightCorner,
+            code.location.bottomLeftCorner
+        ];
+        // Вычисляем среднюю длину стороны в пикселях
+        let sidePx = 0;
+        for (let i = 0; i < corners.length; i++) {
+            const p1 = corners[i];
+            const p2 = corners[(i+1)%4];
+            sidePx += Math.hypot(p1.x - p2.x, p1.y - p2.y);
+        }
+        sidePx /= 4;
+        const mmPerPx = QR_SIZE_MM / sidePx;
+        return { corners, mmPerPx };
+    }
+
+    // ========== ПОИСК ПРЯМОУГОЛЬНЫХ КОНТУРОВ (исключая зону QR) ==========
+    function findRectangularContours(imageData, width, height, qrCorners) {
+        // Преобразуем в серый для Canny
+        const gray = new Uint8ClampedArray(width * height);
+        for (let i = 0; i < imageData.data.length; i += 4) {
+            const r = imageData.data[i];
+            const g = imageData.data[i+1];
+            const b = imageData.data[i+2];
+            gray[i/4] = 0.299 * r + 0.587 * g + 0.114 * b;
+        }
+
+        // Простой детектор границ (Canny-like) — для производительности используем приближение
+        // В браузере нет встроенного Canny, поэтому используем размытие и поиск градиента.
+        // Упрощённо: возьмём разность по соседним пикселям.
+        const edges = new Uint8ClampedArray(width * height);
+        for (let y = 1; y < height-1; y++) {
+            for (let x = 1; x < width-1; x++) {
+                const idx = y * width + x;
+                const gx = gray[idx+1] - gray[idx-1];
+                const gy = gray[idx+width] - gray[idx-width];
+                const mag = Math.hypot(gx, gy);
+                edges[idx] = mag > 30 ? 255 : 0;
+            }
+        }
+
+        // Поиск контуров (простой алгоритм траверса — для демо используем библиотеку? Нет, напишем упрощённо)
+        // В реальном коде лучше использовать OpenCV.js, но мы от него отказались.
+        // Вместо этого: найдём все связные области (blob) и аппроксимируем их прямоугольником.
+        // Но это сложно. Предлагаю вернуться к цветовой сегментации для MVP.
+        // Однако для прямоугольных объектов на контрастном фоне можно найти bounding box по порогу яркости.
+        // Давайте сделаем так: ищем самый большой связный компонент по порогу (объект ярче фона).
+        const visited = new Uint8Array(width * height);
+        const contours = [];
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                if (edges[idx] && !visited[idx]) {
+                    // Заполняем контур (BFS)
+                    const queue = [{x, y}];
+                    const points = [];
+                    visited[idx] = 1;
+                    while (queue.length) {
+                        const p = queue.shift();
+                        points.push(p);
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                if (dx === 0 && dy === 0) continue;
+                                const nx = p.x + dx, ny = p.y + dy;
+                                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                                    const nidx = ny * width + nx;
+                                    if (edges[nidx] && !visited[nidx]) {
+                                        visited[nidx] = 1;
+                                        queue.push({x: nx, y: ny});
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (points.length > 100) {
+                        // Аппроксимируем bounding box
+                        let minX = width, maxX = 0, minY = height, maxY = 0;
+                        for (let p of points) {
+                            minX = Math.min(minX, p.x);
+                            maxX = Math.max(maxX, p.x);
+                            minY = Math.min(minY, p.y);
+                            maxY = Math.max(maxY, p.y);
+                        }
+                        const rect = { x: minX, y: minY, width: maxX-minX, height: maxY-minY };
+                        contours.push({ points, rect });
+                    }
+                }
+            }
+        }
+
+        // Сортируем по площади
+        contours.sort((a,b) => (b.rect.width*b.rect.height) - (a.rect.width*a.rect.height));
+        if (contours.length === 0) return null;
+
+        // Выбираем первый, который не пересекается с QR
+        for (let c of contours) {
+            if (qrCorners) {
+                // Проверяем, не находится ли центр прямоугольника внутри QR
+                const centerX = c.rect.x + c.rect.width/2;
+                const centerY = c.rect.y + c.rect.height/2;
+                // Простая проверка: попадает ли центр в полигон QR
+                let inside = false;
+                // Упрощённо: считаем, что QR занимает свою область
+                const qrMinX = Math.min(...qrCorners.map(p=>p.x));
+                const qrMaxX = Math.max(...qrCorners.map(p=>p.x));
+                const qrMinY = Math.min(...qrCorners.map(p=>p.y));
+                const qrMaxY = Math.max(...qrCorners.map(p=>p.y));
+                if (centerX > qrMinX && centerX < qrMaxX && centerY > qrMinY && centerY < qrMaxY) {
+                    continue; // пропускаем сам QR
+                }
+            }
+            // Возвращаем углы bounding box (прямоугольник, выровненный по осям)
+            const r = c.rect;
+            const corners = [
+                {x: r.x, y: r.y},
+                {x: r.x + r.width, y: r.y},
+                {x: r.x + r.width, y: r.y + r.height},
+                {x: r.x, y: r.y + r.height}
+            ];
+            return corners;
+        }
+        return null;
+    }
+
+    // ========== ОСНОВНОЙ ЦИКЛ ==========
     function processFrame() {
         if (!cameraActive || !video.videoWidth) {
             animationId = requestAnimationFrame(processFrame);
@@ -94,191 +222,106 @@
         }
         ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
         const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
-        const code = jsQR(imageData.data, overlay.width, overlay.height, { inversionAttempts: "dontInvert" });
 
-        if (code) {
-            markerDetected = true;
-            const corners = [
-                code.location.topLeftCorner,
-                code.location.topRightCorner,
-                code.location.bottomRightCorner,
-                code.location.bottomLeftCorner
-            ];
+        // 1. Детекция QR
+        const qr = detectQR(imageData, overlay.width, overlay.height);
+        if (qr) {
+            qrDetected = true;
+            qrCorners = qr.corners;
+            scaleMMperPX = qr.mmPerPx;
+            // Рисуем зелёную рамку QR
             ctx.strokeStyle = "#0f0";
-            ctx.lineWidth = 4;
+            ctx.lineWidth = 3;
             ctx.beginPath();
-            ctx.moveTo(corners[0].x, corners[0].y);
-            for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
+            ctx.moveTo(qrCorners[0].x, qrCorners[0].y);
+            for (let i=1; i<qrCorners.length; i++) ctx.lineTo(qrCorners[i].x, qrCorners[i].y);
             ctx.closePath();
             ctx.stroke();
-
-            // Вычисление масштаба
-            let sidePx = 0;
-            for (let i = 0; i < corners.length; i++) {
-                const p1 = corners[i];
-                const p2 = corners[(i+1)%4];
-                sidePx += Math.hypot(p1.x - p2.x, p1.y - p2.y);
-            }
-            sidePx /= 4;
-            scaleMMperPX = QR_SIZE_MM / sidePx;
-            statusDiv.innerText = "✅ QR найден. Тапните для замера.";
+            statusDiv.innerText = "✅ QR найден. Ищем объект...";
         } else {
-            markerDetected = false;
+            qrDetected = false;
+            qrCorners = null;
             scaleMMperPX = null;
-            statusDiv.innerText = "⚠️ QR не виден.";
+            statusDiv.innerText = "⚠️ QR не виден. Поместите маркер в кадр.";
+            animationId = requestAnimationFrame(processFrame);
+            return;
         }
 
-        // Отрисовка точек замера
-        if (points.length > 0) {
-            ctx.fillStyle = "#0f0";
-            for (let i = 0; i < points.length; i++) {
-                ctx.beginPath();
-                ctx.arc(points[i].x, points[i].y, 8, 0, 2*Math.PI);
-                ctx.fill();
-                ctx.fillStyle = "#fff";
-                ctx.font = "bold 20px monospace";
-                ctx.fillText(i+1, points[i].x+12, points[i].y-8);
-                ctx.fillStyle = "#0f0";
-            }
-            if (points.length === 2 && scaleMMperPX) {
-                ctx.beginPath();
-                ctx.moveTo(points[0].x, points[0].y);
-                ctx.lineTo(points[1].x, points[1].y);
+        // 2. Поиск прямоугольного контура (объекта)
+        if (qrDetected && scaleMMperPX) {
+            const objectCorners = findRectangularContours(imageData, overlay.width, overlay.height, qrCorners);
+            if (objectCorners) {
+                selectedContour = objectCorners;
+                // Рисуем жёлтую рамку объекта
                 ctx.strokeStyle = "#ff0";
                 ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(objectCorners[0].x, objectCorners[0].y);
+                for (let i=1; i<objectCorners.length; i++) ctx.lineTo(objectCorners[i].x, objectCorners[i].y);
+                ctx.closePath();
                 ctx.stroke();
-                const dist_px = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
-                const dist_mm = dist_px * scaleMMperPX;
-                distanceDiv.innerText = dist_mm.toFixed(1) + " mm";
+
+                // Вычисляем размеры в мм (ширина и высота bounding box)
+                const widthPx = Math.hypot(objectCorners[1].x - objectCorners[0].x, objectCorners[1].y - objectCorners[0].y);
+                const heightPx = Math.hypot(objectCorners[2].x - objectCorners[1].x, objectCorners[2].y - objectCorners[1].y);
+                const widthMm = widthPx * scaleMMperPX;
+                const heightMm = heightPx * scaleMMperPX;
+                objectWidth = widthMm;
+                objectHeight = heightMm;
+                distanceDiv.innerText = `${widthMm.toFixed(1)} x ${heightMm.toFixed(1)} mm`;
+                statusDiv.innerText = "Объект найден. Нажмите Сохранить.";
             } else {
+                selectedContour = null;
                 distanceDiv.innerText = "--- mm";
+                statusDiv.innerText = "Объект не найден. Наведите на контрастный прямоугольник.";
             }
-        } else {
-            distanceDiv.innerText = "--- mm";
         }
+
         animationId = requestAnimationFrame(processFrame);
     }
 
-    // ========== УСТАНОВКА ТОЧЕК (касания) ==========
-    function handleTouch(e) {
-        if (!cameraActive) {
-            statusDiv.innerText = "❌ Сначала СТАРТ";
-            return;
-        }
-        if (!markerDetected) {
-            statusDiv.innerText = "❌ QR не обнаружен";
-            return;
-        }
-        e.preventDefault();
-        const rect = overlay.getBoundingClientRect();
-        const scaleX = overlay.width / rect.width;
-        const scaleY = overlay.height / rect.height;
-        const touch = e.touches[0];
-        const canvasX = (touch.clientX - rect.left) * scaleX;
-        const canvasY = (touch.clientY - rect.top) * scaleY;
-
-        if (points.length === 2) {
-            // Если уже две точки, не добавляем новые (пользователь должен нажать «СБРОС ТОЧЕК»)
-            statusDiv.innerText = "Две точки уже есть. Нажмите СБРОС.";
-            return;
-        }
-        points.push({ x: canvasX, y: canvasY });
-        if (points.length === 2) {
-            statusDiv.innerText = "Замер готов. Добавьте кадр или сбросьте точки.";
-        } else {
-            statusDiv.innerText = "Тапните вторую точку.";
-        }
-    }
-
-    function resetPoints() {
-        points = [];
-        distanceDiv.innerText = "--- mm";
-        statusDiv.innerText = "Точки сброшены.";
-    }
-
-    // ========== УПРАВЛЕНИЕ ДАТАСЕТОМ ==========
-    function addFrame() {
-        if (!cameraActive) {
+    // ========== СОХРАНЕНИЕ ФОТО ==========
+    function saveSnapshot() {
+        if (!cameraActive || !overlay.width) {
             alert("Камера не активна");
             return;
         }
-        if (points.length !== 2) {
-            alert("Сначала сделайте замер (две точки)");
-            return;
+        const snapCanvas = document.createElement('canvas');
+        snapCanvas.width = overlay.width;
+        snapCanvas.height = overlay.height;
+        const snapCtx = snapCanvas.getContext('2d');
+        snapCtx.drawImage(overlay, 0, 0);
+        snapCtx.fillStyle = "#0f0";
+        snapCtx.font = "20px monospace";
+        snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
+        if (selectedContour && scaleMMperPX) {
+            const sizeText = `${objectWidth.toFixed(1)} x ${objectHeight.toFixed(1)} mm`;
+            snapCtx.fillStyle = "yellow";
+            snapCtx.font = "bold 28px monospace";
+            snapCtx.fillText(sizeText, 20, 90);
         }
-        if (!scaleMMperPX) {
-            alert("QR-маркер не обнаружен");
-            return;
-        }
-        // Сохраняем текущий canvas как PNG
-        const dataUrl = overlay.toDataURL('image/png');
-        frames.push(dataUrl);
-        updateFrameCounter();
-        statusDiv.innerText = `Кадр ${frames.length} сохранён. Сделайте следующий ракурс.`;
-        // Автоматически сбрасываем точки для следующего замера
-        resetPoints();
+        const dataUrl = snapCanvas.toDataURL('image/png');
+        const win = window.open();
+        win.document.write(`
+            <body style="margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
+                <img src="${dataUrl}" style="max-width:100%;max-height:85vh;border:1px solid #0f0;">
+                <p style="color:#0f0;font-family:monospace;margin-top:20px;text-align:center;">
+                    📸 Зажмите фото → "Сохранить в фото"
+                </p>
+                <button onclick="window.close()" style="background:#0f0;color:#000;padding:10px;margin-top:10px;">Закрыть</button>
+            </body>
+        `);
     }
 
-    function clearFrames() {
-        frames = [];
-        updateFrameCounter();
-        statusDiv.innerText = "Все кадры удалены.";
-    }
-
-    function updateFrameCounter() {
-        let badge = document.getElementById('frameCounter');
-        if (!badge) {
-            badge = document.createElement('span');
-            badge.id = 'frameCounter';
-            badge.className = 'badge';
-            addFrameBtn.appendChild(badge);
-        }
-        badge.innerText = frames.length;
-    }
-
-    // ========== ЭКСПОРТ В ZIP ==========
-    async function exportDataset() {
-        if (frames.length === 0) {
-            alert("Нет сохранённых кадров.");
-            return;
-        }
-        if (!scaleMMperPX) {
-            alert("Масштаб не определён (QR не виден)");
-            return;
-        }
-        const zip = new JSZip();
-        const folder = zip.folder("MI_AI_dataset");
-
-        // Добавляем JSON с метаданными
-        const metadata = {
-            timestamp: new Date().toISOString(),
-            qr_size_mm: QR_SIZE_MM,
-            scale_mm_per_px: scaleMMperPX,
-            frames_count: frames.length,
-            device: navigator.userAgent
-        };
-        folder.file("metadata.json", JSON.stringify(metadata, null, 2));
-
-        // Добавляем каждый кадр
-        for (let i = 0; i < frames.length; i++) {
-            const base64 = frames[i].split(',')[1];
-            folder.file(`frame_${String(i+1).padStart(3,'0')}.png`, base64, { base64: true });
-        }
-
-        const content = await zip.generateAsync({ type: "blob" });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(content);
-        link.download = `MI_AI_dataset_${Date.now()}.zip`;
-        link.click();
-        URL.revokeObjectURL(link.href);
-        statusDiv.innerText = `Экспортировано ${frames.length} кадров.`;
-    }
+    // ========== ТАП ДЛЯ ВЫБОРА ДРУГОГО ОБЪЕКТА (будет доработано) ==========
+    // Пока оставим автоматический выбор самого крупного.
 
     // ========== ИНИЦИАЛИЗАЦИЯ ==========
-    overlay.addEventListener('touchstart', handleTouch, { passive: false });
-    window.addEventListener('touchmove', function(e) { if (e.target === overlay) e.preventDefault(); }, { passive: false });
-    // кнопки уже имеют onclick
-    updateFrameCounter();
+    overlay.addEventListener('touchstart', (e) => {
+        // В будущем: тап для выбора другого объекта
+        e.preventDefault();
+        // Пока ничего не делаем
+    });
 </script>
 </body>
 </html>
