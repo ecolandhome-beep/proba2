@@ -3,86 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI | Стабильная версия</title>
+    <title>MI-AI | Финал</title>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
     <style>
-        * {
-            user-select: none;
-            touch-action: manipulation;
-            box-sizing: border-box;
-        }
-        body {
-            margin: 0;
-            background: #000;
-            color: #0f0;
-            font-family: 'Courier New', monospace;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .camera-container {
-            flex: 1;
-            position: relative;
-            background: #111;
-            overflow: hidden;
-        }
-        video, canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-        canvas {
-            pointer-events: none;
-        }
-        #videoCanvas {
-            pointer-events: auto;
-        }
-        .controls {
-            display: flex;
-            gap: 12px;
-            padding: 12px;
-            background: #0a0a0a;
-            border-top: 2px solid #0f0;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-        button {
-            background: #000;
-            color: #0f0;
-            border: 2px solid #0f0;
-            font-family: monospace;
-            font-weight: bold;
-            font-size: 1rem;
-            padding: 12px 20px;
-            border-radius: 40px;
-            cursor: pointer;
-            transition: 0.1s;
-        }
-        button:active {
-            background: #0f0;
-            color: #000;
-        }
-        .mode-active {
-            background: #0f0;
-            color: #000;
-        }
-        .info-panel {
-            background: #001500;
-            border-top: 1px solid #0f0;
-            padding: 8px;
-            text-align: center;
-            font-size: 14px;
-        }
-        .size-display {
-            font-size: 24px;
-            font-weight: bold;
-            margin-top: 4px;
-        }
+        * { user-select: none; touch-action: manipulation; box-sizing: border-box; }
+        body { margin: 0; background: #000; color: #0f0; font-family: monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        .camera-container { flex: 1; position: relative; background: #111; }
+        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
+        canvas { pointer-events: none; }
+        #videoCanvas { pointer-events: auto; }
+        .controls { display: flex; gap: 10px; padding: 12px; background: #0a0a0a; border-top: 2px solid #0f0; flex-wrap: wrap; justify-content: center; }
+        button { background: #000; color: #0f0; border: 2px solid #0f0; font-family: monospace; font-weight: bold; font-size: 0.9rem; padding: 10px 18px; border-radius: 40px; cursor: pointer; }
+        button:active { background: #0f0; color: #000; }
+        .mode-active { background: #0f0; color: #000; }
+        .info-panel { background: #001500; padding: 8px; text-align: center; font-size: 14px; }
+        .size-display { font-size: 22px; font-weight: bold; margin-top: 4px; }
+        select { background: #000; color: #0f0; border: 1px solid #0f0; padding: 5px; border-radius: 20px; margin-left: 10px; }
     </style>
 </head>
 <body>
@@ -93,8 +30,12 @@
 </div>
 <div class="controls">
     <button id="autoBtn">🔍 АВТО-ПОИСК</button>
-    <button id="modeBtn">✋ РУЧНОЙ РЕЖИМ</button>
+    <button id="modeBtn">✋ РУЧНОЙ</button>
     <button id="captureBtn">📸 СОХРАНИТЬ</button>
+    <select id="objectType">
+        <option value="dark">Тёмный объект</option>
+        <option value="light">Светлый объект</option>
+    </select>
 </div>
 <div class="info-panel">
     <div id="statusMsg">⏳ Ожидание QR...</div>
@@ -102,28 +43,22 @@
 </div>
 
 <script>
-    // ---------- КОНФИГУРАЦИЯ ----------
-    const QR_MM = 46.0;  // 46×46 мм
-    let video, videoCanvas, overlayCanvas;
-    let videoCtx, overlayCtx;
-    let homography = null;        // матрица 3x3 (пиксели -> мм)
-    let qrCorners = null;
-    let manualMode = false;
-    let points = [];
-    let lastAutoTime = 0;
-    let currentMeasured = null;   // {width, height, cornersPx}
+    const QR_MM = 46.0;
+    let video, videoCanvas, overlayCanvas, videoCtx, overlayCtx;
+    let homography = null, qrCorners = null;
+    let manualMode = false, points = [];
+    let lastAutoTime = 0, currentMeasured = null;
     let animationId = null;
 
-    // DOM элементы
     const autoBtn = document.getElementById('autoBtn');
     const modeBtn = document.getElementById('modeBtn');
     const captureBtn = document.getElementById('captureBtn');
+    const objectTypeSelect = document.getElementById('objectType');
     const statusDiv = document.getElementById('statusMsg');
     const sizeDiv = document.getElementById('sizeResult');
 
-    // ---------- ГОМОГРАФИЯ (DLT через numeric) ----------
+    // ---------- ГОМОГРАФИЯ ----------
     function computeHomography(srcPx, dstMm) {
-        // srcPx и dstMm - массивы из 4 точек {x, y}
         const A = [];
         for (let i = 0; i < 4; i++) {
             const [x, y] = [srcPx[i].x, srcPx[i].y];
@@ -132,381 +67,240 @@
             A.push([0, 0, 0, -x, -y, -1, x*v, y*v, v]);
         }
         const svd = numeric.svd(A);
-        const h = svd.V.slice(0, 9).map(row => row[8]); // последний столбец
-        return [
-            [h[0], h[1], h[2]],
-            [h[3], h[4], h[5]],
-            [h[6], h[7], h[8]]
-        ];
+        const h = svd.V.slice(0, 9).map(row => row[8]);
+        return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], h[8]]];
     }
 
     function applyHomography(H, x, y) {
         const denom = H[2][0]*x + H[2][1]*y + H[2][2];
         if (Math.abs(denom) < 1e-6) return null;
-        const mmX = (H[0][0]*x + H[0][1]*y + H[0][2]) / denom;
-        const mmY = (H[1][0]*x + H[1][1]*y + H[1][2]) / denom;
-        return { x: mmX, y: mmY };
+        return { x: (H[0][0]*x + H[0][1]*y + H[0][2]) / denom, y: (H[1][0]*x + H[1][1]*y + H[1][2]) / denom };
     }
 
-    function distanceMm(p1, p2) {
-        return Math.hypot(p1.x - p2.x, p1.y - p2.y);
-    }
+    function distanceMm(p1, p2) { return Math.hypot(p1.x - p2.x, p1.y - p2.y); }
 
-    // Обновить гомографию по найденному QR
     function updateHomography(cornersPx) {
-        const dstMm = [
-            {x: 0, y: 0},
-            {x: QR_MM, y: 0},
-            {x: QR_MM, y: QR_MM},
-            {x: 0, y: QR_MM}
-        ];
-        try {
-            homography = computeHomography(cornersPx, dstMm);
-            qrCorners = cornersPx;
-            statusDiv.innerText = "✅ QR найден. Гомография готова.";
-            return true;
-        } catch(e) {
-            console.warn(e);
-            return false;
-        }
+        const dstMm = [{x:0,y:0},{x:QR_MM,y:0},{x:QR_MM,y:QR_MM},{x:0,y:QR_MM}];
+        try { homography = computeHomography(cornersPx, dstMm); qrCorners = cornersPx; statusDiv.innerText = "✅ QR найден"; return true; }
+        catch(e) { return false; }
     }
 
-    // ---------- АВТО-ДЕТЕКЦИЯ ОБЪЕКТА (центральная область, BFS) ----------
+    // ---------- АВТО-ДЕТЕКЦИЯ С ВЫБОРОМ ТИПА ОБЪЕКТА ----------
     function autoDetectObject() {
-        if (!homography) {
-            statusDiv.innerText = "⚠️ Сначала дождитесь QR!";
-            return null;
-        }
+        if (!homography) { statusDiv.innerText = "⚠️ Нет QR"; return null; }
         const w = videoCanvas.width, h = videoCanvas.height;
-        if (w === 0 || h === 0) return null;
-
-        // Берем центральную область 400x400 (или меньше)
-        const cropSize = Math.min(w, h, 400);
-        const cropX = (w - cropSize) / 2;
-        const cropY = (h - cropSize) / 2;
-
-        // Копируем область во временный canvas
+        if (w===0) return null;
+        const cropSize = Math.min(w, h, 450);
+        const cropX = (w - cropSize)/2, cropY = (h - cropSize)/2;
         const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = cropSize;
-        tempCanvas.height = cropSize;
+        tempCanvas.width = cropSize; tempCanvas.height = cropSize;
         const ctx = tempCanvas.getContext('2d');
         ctx.drawImage(videoCanvas, cropX, cropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
-        const imgData = ctx.getImageData(0, 0, cropSize, cropSize);
+        const imgData = ctx.getImageData(0,0,cropSize,cropSize);
         const data = imgData.data;
-
-        // Вычисляем среднюю яркость
-        let sum = 0;
-        for (let i=0; i<data.length; i+=4) {
-            const gray = 0.2126*data[i] + 0.7152*data[i+1] + 0.0722*data[i+2];
-            sum += gray;
-        }
-        const avgBright = sum / (cropSize*cropSize);
-        const threshold = avgBright * 0.85; // объект темнее фона (при необходимости поменять знак)
-        // Бинарная маска
-        const binary = Array(cropSize).fill().map(() => Array(cropSize).fill(false));
-        for (let y=0; y<cropSize; y++) {
-            for (let x=0; x<cropSize; x++) {
-                const idx = (y*cropSize + x)*4;
-                const gray = 0.2126*data[idx] + 0.7152*data[idx+1] + 0.0722*data[idx+2];
-                binary[y][x] = (gray < threshold);
+        // Вычисляем порог (адаптивный)
+        let sum=0;
+        for(let i=0;i<data.length;i+=4) sum += 0.2126*data[i]+0.7152*data[i+1]+0.0722*data[i+2];
+        const avg = sum/(cropSize*cropSize);
+        const threshold = avg * 0.85;
+        const isDarkMode = objectTypeSelect.value === 'dark'; // dark: объект темнее фона
+        const binary = Array(cropSize).fill().map(()=>Array(cropSize).fill(false));
+        for(let y=0;y<cropSize;y++){
+            for(let x=0;x<cropSize;x++){
+                const idx=(y*cropSize+x)*4;
+                const gray=0.2126*data[idx]+0.7152*data[idx+1]+0.0722*data[idx+2];
+                binary[y][x] = isDarkMode ? (gray < threshold) : (gray > threshold);
             }
         }
-
-        // BFS (8-связность) для поиска самого большого компонента
-        let visited = Array(cropSize).fill().map(() => Array(cropSize).fill(false));
-        let bestComponent = [];
+        // BFS
+        let visited = Array(cropSize).fill().map(()=>Array(cropSize).fill(false));
+        let bestComp = [];
         const dirs = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
-        for (let y=0; y<cropSize; y++) {
-            for (let x=0; x<cropSize; x++) {
-                if (binary[y][x] && !visited[y][x]) {
-                    const queue = [[x,y]];
-                    visited[y][x] = true;
-                    const comp = [];
-                    while (queue.length) {
-                        const [cx, cy] = queue.shift();
-                        comp.push([cx, cy]);
-                        for (let d of dirs) {
-                            const nx = cx + d[0], ny = cy + d[1];
-                            if (nx>=0 && nx<cropSize && ny>=0 && ny<cropSize && binary[ny][nx] && !visited[ny][nx]) {
-                                visited[ny][nx] = true;
-                                queue.push([nx, ny]);
+        for(let y=0;y<cropSize;y++){
+            for(let x=0;x<cropSize;x++){
+                if(binary[y][x] && !visited[y][x]){
+                    const queue=[[x,y]]; visited[y][x]=true; const comp=[];
+                    while(queue.length){
+                        const [cx,cy]=queue.shift(); comp.push([cx,cy]);
+                        for(let d of dirs){
+                            const nx=cx+d[0], ny=cy+d[1];
+                            if(nx>=0 && nx<cropSize && ny>=0 && ny<cropSize && binary[ny][nx] && !visited[ny][nx]){
+                                visited[ny][nx]=true; queue.push([nx,ny]);
                             }
                         }
                     }
-                    if (comp.length > bestComponent.length) bestComponent = comp;
+                    if(comp.length > bestComp.length) bestComp=comp;
                 }
             }
         }
-
-        if (bestComponent.length < 50) {
-            statusDiv.innerText = "📭 Объект не найден (мало пикселей).";
-            return null;
+        if(bestComp.length < 80) { statusDiv.innerText = "📭 Объект не найден"; return null; }
+        let minX=cropSize,minY=cropSize,maxX=0,maxY=0;
+        for(let [px,py] of bestComp){
+            if(px<minX) minX=px; if(px>maxX) maxX=px; if(py<minY) minY=py; if(py>maxY) maxY=py;
         }
-
-        // Bounding box
-        let minX=cropSize, minY=cropSize, maxX=0, maxY=0;
-        for (let [px,py] of bestComponent) {
-            if (px<minX) minX=px;
-            if (px>maxX) maxX=px;
-            if (py<minY) minY=py;
-            if (py>maxY) maxY=py;
+        // PCA для поворота
+        let sumX=0,sumY=0;
+        for(let [px,py] of bestComp){ sumX+=px; sumY+=py; }
+        const cx=sumX/bestComp.length, cy=sumY/bestComp.length;
+        let uxx=0,uyy=0,uxy=0;
+        for(let [px,py] of bestComp){
+            const dx=px-cx, dy=py-cy;
+            uxx+=dx*dx; uyy+=dy*dy; uxy+=dx*dy;
         }
-
-        // Простой поворот через PCA
-        let sumX=0, sumY=0;
-        for (let [px,py] of bestComponent) { sumX+=px; sumY+=py; }
-        const cx = sumX/bestComponent.length;
-        const cy = sumY/bestComponent.length;
-        let uxx=0, uyy=0, uxy=0;
-        for (let [px,py] of bestComponent) {
-            const dx = px-cx, dy = py-cy;
-            uxx += dx*dx;
-            uyy += dy*dy;
-            uxy += dx*dy;
-        }
-        let angle = 0.5 * Math.atan2(2*uxy, uxx - uyy);
-        const rotCos = Math.cos(angle);
-        const rotSin = Math.sin(angle);
-        const cornersLocal = [
-            {x: minX, y: minY}, {x: maxX, y: minY},
-            {x: maxX, y: maxY}, {x: minX, y: maxY}
-        ];
-        const rotated = cornersLocal.map(p => ({
+        let angle = 0.5*Math.atan2(2*uxy, uxx-uyy);
+        const rotCos=Math.cos(angle), rotSin=Math.sin(angle);
+        const cornersLocal = [{x:minX,y:minY},{x:maxX,y:minY},{x:maxX,y:maxY},{x:minX,y:maxY}];
+        const rotated = cornersLocal.map(p=>({
             x: cx + (p.x-cx)*rotCos - (p.y-cy)*rotSin,
             y: cy + (p.x-cx)*rotSin + (p.y-cy)*rotCos
         }));
-        const globalCorners = rotated.map(p => ({
-            x: p.x + cropX,
-            y: p.y + cropY
-        }));
-
-        // Преобразуем в мм
-        const mmCorners = globalCorners.map(p => applyHomography(homography, p.x, p.y));
-        if (mmCorners.some(c => !c)) return null;
+        const globalCorners = rotated.map(p=>({x:p.x+cropX, y:p.y+cropY}));
+        const mmCorners = globalCorners.map(p=>applyHomography(homography, p.x, p.y));
+        if(mmCorners.some(c=>!c)) return null;
         const w1 = distanceMm(mmCorners[0], mmCorners[1]);
         const w2 = distanceMm(mmCorners[3], mmCorners[2]);
         const h1 = distanceMm(mmCorners[0], mmCorners[3]);
         const h2 = distanceMm(mmCorners[1], mmCorners[2]);
-        const width = (w1+w2)/2;
-        const height = (h1+h2)/2;
-        return { width, height, cornersPx: globalCorners };
+        return { width: (w1+w2)/2, height: (h1+h2)/2, cornersPx: globalCorners };
     }
 
     // ---------- ОТРИСОВКА ----------
-    function draw() {
-        if (!overlayCtx) return;
-        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        // Рисуем QR
-        if (qrCorners) {
-            overlayCtx.beginPath();
-            overlayCtx.strokeStyle = "#0f0";
-            overlayCtx.lineWidth = 3;
-            for (let i=0; i<4; i++) {
-                const p1 = qrCorners[i];
-                const p2 = qrCorners[(i+1)%4];
-                overlayCtx.moveTo(p1.x, p1.y);
-                overlayCtx.lineTo(p2.x, p2.y);
-                overlayCtx.stroke();
-            }
+    function draw(){
+        if(!overlayCtx) return;
+        overlayCtx.clearRect(0,0,overlayCanvas.width,overlayCanvas.height);
+        if(qrCorners){
+            overlayCtx.beginPath(); overlayCtx.strokeStyle="#0f0"; overlayCtx.lineWidth=3;
+            for(let i=0;i<4;i++){ overlayCtx.moveTo(qrCorners[i].x,qrCorners[i].y); overlayCtx.lineTo(qrCorners[(i+1)%4].x,qrCorners[(i+1)%4].y); }
+            overlayCtx.stroke();
         }
-        // Ручные точки
-        if (manualMode) {
-            for (let p of points) {
-                overlayCtx.beginPath();
-                overlayCtx.fillStyle = "#ffaa44";
-                overlayCtx.arc(p.x, p.y, 8, 0, 2*Math.PI);
-                overlayCtx.fill();
+        if(manualMode){
+            for(let p of points){
+                overlayCtx.beginPath(); overlayCtx.fillStyle="#ffaa44"; overlayCtx.arc(p.x,p.y,8,0,2*Math.PI); overlayCtx.fill();
             }
-            if (points.length === 2) {
-                overlayCtx.beginPath();
-                overlayCtx.strokeStyle = "#ffaa44";
-                overlayCtx.lineWidth = 3;
-                overlayCtx.moveTo(points[0].x, points[0].y);
-                overlayCtx.lineTo(points[1].x, points[1].y);
-                overlayCtx.stroke();
+            if(points.length===2){
+                overlayCtx.beginPath(); overlayCtx.strokeStyle="#ffaa44"; overlayCtx.lineWidth=3;
+                overlayCtx.moveTo(points[0].x,points[0].y); overlayCtx.lineTo(points[1].x,points[1].y); overlayCtx.stroke();
             }
-        } else if (currentMeasured && currentMeasured.cornersPx) {
-            overlayCtx.beginPath();
-            overlayCtx.strokeStyle = "#ff6b6b";
-            overlayCtx.lineWidth = 4;
-            const corners = currentMeasured.cornersPx;
-            for (let i=0; i<4; i++) {
-                const p1 = corners[i];
-                const p2 = corners[(i+1)%4];
-                overlayCtx.moveTo(p1.x, p1.y);
-                overlayCtx.lineTo(p2.x, p2.y);
-                overlayCtx.stroke();
-            }
+        } else if(currentMeasured && currentMeasured.cornersPx){
+            overlayCtx.beginPath(); overlayCtx.strokeStyle="#ff6b6b"; overlayCtx.lineWidth=4;
+            const c=currentMeasured.cornersPx;
+            for(let i=0;i<4;i++){ overlayCtx.moveTo(c[i].x,c[i].y); overlayCtx.lineTo(c[(i+1)%4].x,c[(i+1)%4].y); }
+            overlayCtx.stroke();
         }
     }
 
-    // ---------- РУЧНОЙ РЕЖИМ ----------
-    function handleTouch(e) {
-        if (!manualMode) return;
+    function handleTouch(e){
+        if(!manualMode) return;
         e.preventDefault();
-        const rect = videoCanvas.getBoundingClientRect();
-        const scaleX = videoCanvas.width / rect.width;
-        const scaleY = videoCanvas.height / rect.height;
-        let cx, cy;
-        if (e.touches) {
-            cx = e.touches[0].clientX;
-            cy = e.touches[0].clientY;
-        } else {
-            cx = e.clientX;
-            cy = e.clientY;
-        }
-        let x = (cx - rect.left) * scaleX;
-        let y = (cy - rect.top) * scaleY;
-        x = Math.min(Math.max(0, x), videoCanvas.width);
-        y = Math.min(Math.max(0, y), videoCanvas.height);
-        points.push({x, y});
-        if (points.length > 2) points.shift();
-        if (points.length === 2 && homography) {
-            const p1 = applyHomography(homography, points[0].x, points[0].y);
-            const p2 = applyHomography(homography, points[1].x, points[1].y);
-            if (p1 && p2) {
-                const dist = distanceMm(p1, p2);
-                sizeDiv.innerText = `${dist.toFixed(1)} мм`;
-                statusDiv.innerText = `Ручное измерение: ${dist.toFixed(1)} мм`;
-                currentMeasured = { width: dist, height: null, cornersPx: null };
-            } else {
-                statusDiv.innerText = "Ошибка гомографии";
-            }
+        const rect=videoCanvas.getBoundingClientRect();
+        const sx=videoCanvas.width/rect.width, sy=videoCanvas.height/rect.height;
+        let cx,cy;
+        if(e.touches){ cx=e.touches[0].clientX; cy=e.touches[0].clientY; }
+        else { cx=e.clientX; cy=e.clientY; }
+        let x=(cx-rect.left)*sx, y=(cy-rect.top)*sy;
+        x=Math.min(Math.max(0,x),videoCanvas.width); y=Math.min(Math.max(0,y),videoCanvas.height);
+        points.push({x,y});
+        if(points.length>2) points.shift();
+        if(points.length===2 && homography){
+            const p1=applyHomography(homography, points[0].x, points[0].y);
+            const p2=applyHomography(homography, points[1].x, points[1].y);
+            if(p1 && p2){
+                const dist=distanceMm(p1,p2);
+                sizeDiv.innerText=`${dist.toFixed(1)} мм`;
+                statusDiv.innerText=`Ручное: ${dist.toFixed(1)} мм`;
+                currentMeasured={width:dist, height:null, cornersPx:null};
+            } else statusDiv.innerText="Ошибка гомографии";
         }
         draw();
     }
 
-    // ---------- ЗАПУСК АВТО-ПОИСКА ----------
-    async function runAuto() {
-        if (manualMode) {
-            manualMode = false;
-            modeBtn.innerText = "✋ РУЧНОЙ РЕЖИМ";
-            modeBtn.classList.remove('mode-active');
-            points = [];
-            draw();
+    async function runAuto(){
+        if(manualMode){
+            manualMode=false; modeBtn.innerText="✋ РУЧНОЙ"; modeBtn.classList.remove('mode-active');
+            points=[]; draw();
         }
-        const now = Date.now();
-        if (now - lastAutoTime < 1000) {
-            statusDiv.innerText = "Подождите 1 секунду перед повтором";
-            return;
-        }
-        lastAutoTime = now;
-        const res = autoDetectObject();
-        if (res) {
-            currentMeasured = res;
-            sizeDiv.innerText = `${res.width.toFixed(1)} x ${res.height.toFixed(1)} мм`;
-            statusDiv.innerText = `Объект найден: ${res.width.toFixed(1)}×${res.height.toFixed(1)} мм`;
-        } else {
-            currentMeasured = null;
-            sizeDiv.innerText = "--- мм";
-        }
+        if(Date.now()-lastAutoTime<1000){ statusDiv.innerText="Подождите 1 сек"; return; }
+        lastAutoTime=Date.now();
+        const res=autoDetectObject();
+        if(res){
+            currentMeasured=res;
+            sizeDiv.innerText=`${res.width.toFixed(1)} x ${res.height.toFixed(1)} мм`;
+            statusDiv.innerText=`Объект: ${res.width.toFixed(1)}×${res.height.toFixed(1)} мм`;
+        } else { currentMeasured=null; sizeDiv.innerText="--- мм"; }
         draw();
     }
 
-    // ---------- СОХРАНЕНИЕ ФОТО ----------
-    function savePhoto() {
-        if (!videoCanvas) return;
-        const snapCanvas = document.createElement('canvas');
-        snapCanvas.width = videoCanvas.width;
-        snapCanvas.height = videoCanvas.height;
-        const ctx = snapCanvas.getContext('2d');
-        ctx.drawImage(videoCanvas, 0, 0);
-        ctx.drawImage(overlayCanvas, 0, 0);
-        ctx.fillStyle = "#0f0";
-        ctx.font = "bold 24px monospace";
-        ctx.shadowBlur = 0;
-        ctx.fillText("MI-AI", 20, 50);
-        if (currentMeasured) {
-            let txt = currentMeasured.height ? `${currentMeasured.width.toFixed(1)} x ${currentMeasured.height.toFixed(1)} mm` : `${currentMeasured.width.toFixed(1)} мм`;
-            ctx.fillStyle = "#ff0";
-            ctx.font = "bold 28px monospace";
-            ctx.fillText(txt, 20, 100);
+    function savePhoto(){
+        if(!videoCanvas) return;
+        const snap=document.createElement('canvas');
+        snap.width=videoCanvas.width; snap.height=videoCanvas.height;
+        const ctx=snap.getContext('2d');
+        ctx.drawImage(videoCanvas,0,0); ctx.drawImage(overlayCanvas,0,0);
+        ctx.fillStyle="#0f0"; ctx.font="bold 24px monospace"; ctx.fillText("MI-AI",20,50);
+        if(currentMeasured){
+            let txt=currentMeasured.height?`${currentMeasured.width.toFixed(1)}x${currentMeasured.height.toFixed(1)} mm`:`${currentMeasured.width.toFixed(1)} mm`;
+            ctx.fillStyle="#ff0"; ctx.font="bold 28px monospace"; ctx.fillText(txt,20,100);
         }
-        const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.9);
-        const link = document.createElement('a');
-        link.download = `mi-ai_${Date.now()}.jpg`;
-        link.href = dataUrl;
-        link.click();
+        const url=snap.toDataURL('image/jpeg',0.9);
+        const a=document.createElement('a'); a.download=`mi-ai_${Date.now()}.jpg`; a.href=url; a.click();
     }
 
-    // ---------- ОСНОВНОЙ ЦИКЛ (захват видео и детекция QR) ----------
-    async function startCamera() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-            video.srcObject = stream;
+    async function startCamera(){
+        try{
+            const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+            video.srcObject=stream;  // ИСПРАВЛЕНО: было scrObject
             await video.play();
-            videoCanvas = document.getElementById('videoCanvas');
-            overlayCanvas = document.getElementById('overlayCanvas');
-            videoCtx = videoCanvas.getContext('2d');
-            overlayCtx = overlayCanvas.getContext('2d');
-            videoCanvas.addEventListener('touchstart', handleTouch);
-            videoCanvas.addEventListener('mousedown', handleTouch);
+            videoCanvas=document.getElementById('videoCanvas');
+            overlayCanvas=document.getElementById('overlayCanvas');
+            videoCtx=videoCanvas.getContext('2d');
+            overlayCtx=overlayCanvas.getContext('2d');
+            videoCanvas.addEventListener('touchstart',handleTouch);
+            videoCanvas.addEventListener('mousedown',handleTouch);
             requestAnimationFrame(processFrame);
-        } catch(err) {
-            statusDiv.innerText = "Ошибка камеры: " + err.message;
+        }catch(err){
+            statusDiv.innerText="Ошибка камеры: "+err.message;
         }
     }
 
-    function processFrame() {
-        if (!video.videoWidth) {
-            animationId = requestAnimationFrame(processFrame);
-            return;
+    function processFrame(){
+        if(!video.videoWidth){ animationId=requestAnimationFrame(processFrame); return; }
+        const w=video.videoWidth, h=video.videoHeight;
+        if(videoCanvas.width!==w || videoCanvas.height!==h){
+            videoCanvas.width=w; videoCanvas.height=h;
+            overlayCanvas.width=w; overlayCanvas.height=h;
         }
-        const w = video.videoWidth;
-        const h = video.videoHeight;
-        if (videoCanvas.width !== w || videoCanvas.height !== h) {
-            videoCanvas.width = w;
-            videoCanvas.height = h;
-            overlayCanvas.width = w;
-            overlayCanvas.height = h;
-        }
-        videoCtx.drawImage(video, 0, 0, w, h);
-        // Детекция QR (каждые 200 мс)
-        const now = Date.now();
-        if (!qrCorners || now - (window._lastQRTime||0) > 200) {
-            window._lastQRTime = now;
-            const imgData = videoCtx.getImageData(0, 0, w, h);
-            const code = jsQR(imgData.data, w, h, { inversionAttempts: "dontInvert" });
-            if (code && code.corners) {
-                const corners = [
-                    code.location.topLeftCorner,
-                    code.location.topRightCorner,
-                    code.location.bottomRightCorner,
-                    code.location.bottomLeftCorner
-                ];
-                if (updateHomography(corners)) {
-                    // успешно
-                }
-            } else {
-                homography = null;
-                qrCorners = null;
-                statusDiv.innerText = "⚠️ QR не виден. Наведите камеру.";
+        videoCtx.drawImage(video,0,0,w,h);
+        const now=Date.now();
+        if(!qrCorners || now-(window._lastQR||0)>200){
+            window._lastQR=now;
+            const imgData=videoCtx.getImageData(0,0,w,h);
+            const code=jsQR(imgData.data,w,h,{inversionAttempts:"dontInvert"});
+            if(code && code.corners){
+                const corners=[code.location.topLeftCorner, code.location.topRightCorner, code.location.bottomRightCorner, code.location.bottomLeftCorner];
+                updateHomography(corners);
+            }else{
+                homography=null; qrCorners=null;
+                statusDiv.innerText="⚠️ QR не виден";
             }
         }
         draw();
-        animationId = requestAnimationFrame(processFrame);
+        animationId=requestAnimationFrame(processFrame);
     }
 
-    // ---------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------
-    autoBtn.addEventListener('click', runAuto);
-    modeBtn.addEventListener('click', () => {
-        manualMode = !manualMode;
-        points = [];
-        currentMeasured = null;
-        sizeDiv.innerText = "--- мм";
-        if (manualMode) {
-            modeBtn.innerText = "🤖 АВТО-РЕЖИМ";
-            modeBtn.classList.add('mode-active');
-            statusDiv.innerText = "Ручной режим: коснитесь дважды для измерения отрезка";
-        } else {
-            modeBtn.innerText = "✋ РУЧНОЙ РЕЖИМ";
-            modeBtn.classList.remove('mode-active');
-            statusDiv.innerText = "Авто-режим, нажмите АВТО-ПОИСК";
+    autoBtn.addEventListener('click',runAuto);
+    modeBtn.addEventListener('click',()=>{
+        manualMode=!manualMode;
+        points=[]; currentMeasured=null; sizeDiv.innerText="--- мм";
+        if(manualMode){
+            modeBtn.innerText="🤖 АВТО"; modeBtn.classList.add('mode-active');
+            statusDiv.innerText="Ручной режим: два касания";
+        }else{
+            modeBtn.innerText="✋ РУЧНОЙ"; modeBtn.classList.remove('mode-active');
+            statusDiv.innerText="Авто-режим: нажмите АВТО-ПОИСК";
         }
         draw();
     });
-    captureBtn.addEventListener('click', savePhoto);
-
+    captureBtn.addEventListener('click',savePhoto);
     startCamera();
 </script>
 </body>
