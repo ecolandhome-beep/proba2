@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI: Измерение объектов по QR</title>
+    <title>MI-AI | Измерение объектов по QR</title>
     <style>
         * {
             user-select: none;
@@ -11,45 +11,57 @@
         }
         body {
             margin: 0;
-            padding: 10px;
-            background: #111;
+            padding: 0;
+            background: #000;
             color: #eee;
             font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
         }
-        .container {
+        .camera-container {
             position: relative;
             width: 100%;
-            max-width: 640px;
-            margin: 0 auto;
+            max-width: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+        }
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 4 / 3; /* fallback, реальное соотношение задаст видео */
+            background: #000;
         }
         video, canvas {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
-            height: auto;
-            border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            height: 100%;
+            object-fit: contain;
         }
         canvas {
             pointer-events: none;
         }
         #videoCanvas {
             pointer-events: auto; /* для ручного режима */
+            object-fit: contain;
         }
         .controls {
-            margin-top: calc(100% + 10px);
             display: flex;
             flex-wrap: wrap;
-            gap: 10px;
+            gap: 12px;
             justify-content: center;
-            padding: 10px;
-            background: #1e1e1e;
-            border-radius: 40px;
-            backdrop-filter: blur(8px);
+            padding: 16px;
+            background: #1e1e1eee;
+            backdrop-filter: blur(12px);
+            border-radius: 48px;
+            margin: 16px;
+            z-index: 20;
+            position: relative;
         }
         button {
             background: #2c7da0;
@@ -57,11 +69,12 @@
             color: white;
             font-size: 1rem;
             font-weight: bold;
-            padding: 12px 20px;
+            padding: 12px 24px;
             border-radius: 40px;
             cursor: pointer;
             transition: 0.2s;
             touch-action: manipulation;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
         button:active {
             transform: scale(0.96);
@@ -76,13 +89,14 @@
             backdrop-filter: blur(4px);
             padding: 8px 16px;
             border-radius: 32px;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             text-align: center;
-            margin-top: 8px;
+            margin: 8px 16px;
             font-weight: 500;
+            max-width: 90%;
         }
         .size-badge {
-            font-size: 1.3rem;
+            font-size: 1.2rem;
             font-family: monospace;
             background: #2a9d8f;
             display: inline-block;
@@ -93,23 +107,20 @@
         footer {
             font-size: 0.7rem;
             text-align: center;
-            margin-top: 16px;
+            margin: 8px;
             opacity: 0.6;
         }
-        @media (max-width: 600px) {
-            button { padding: 10px 16px; font-size: 0.9rem; }
-        }
     </style>
-    <!-- Лёгкая библиотека numeric для решения линейных систем (DLT) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
-    <!-- jsQR для детекции QR-кода -->
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
 <body>
-<div class="container">
-    <video id="video" playsinline autoplay muted style="position:relative; width:100%; height:auto; visibility:visible"></video>
-    <canvas id="overlayCanvas" style="pointer-events:none;"></canvas>
-    <canvas id="videoCanvas" style="pointer-events:auto;"></canvas>
+<div class="camera-container">
+    <div class="video-wrapper" id="videoWrapper">
+        <video id="video" playsinline autoplay muted style="position:absolute; width:100%; height:100%; object-fit:contain"></video>
+        <canvas id="overlayCanvas" style="pointer-events:none;"></canvas>
+        <canvas id="videoCanvas" style="pointer-events:auto;"></canvas>
+    </div>
 </div>
 <div class="controls">
     <button id="autoDetectBtn">🔍 Авто-поиск</button>
@@ -117,44 +128,36 @@
     <button id="captureBtn">📸 Сохранить фото</button>
 </div>
 <div class="info" id="infoPanel">
-    ⚡ Ожидание QR...<br>
-    Размеры: —
+    ⚡ Ожидание QR-маркера...
 </div>
-<footer>QR 46×46 мм | Объект измеряется в центральной зоне</footer>
+<footer>QR 46×46 мм | Объект в центре | Авто-поиск по кнопке</footer>
 
 <script>
     // ---------- КОНФИГУРАЦИЯ ----------
     const QR_REAL_W = 46.0;   // мм
     const QR_REAL_H = 46.0;
-    // Реальные размеры объекта для проверки (не влияют на вычисления, только для отладки)
-    const KNOWN_W = 85.7;
-    const KNOWN_H = 54.1;
 
-    // Глобальные переменные
     let video = null;
     let videoCanvas = null, overlayCanvas = null;
     let videoCtx = null, overlayCtx = null;
     let animationId = null;
     let homographyMatrix = null;        // 3x3 матрица гомографии (пиксели -> мм)
-    let qrCornersPx = null;             // 4 угла QR в пикселях [[x,y], ...]
+    let qrCornersPx = null;
     let lastQrTimestamp = 0;
 
-    // Режим: true = ручной (две точки касанием), false = авто (ждём кнопку)
     let manualMode = false;
-    let pointsManual = [];               // до двух точек {x,y}
-    let measuredMm = null;               // последний результат {width, height}
+    let pointsManual = [];
+    let measuredMm = null;               // { width, height, cornersPx }
 
-    // Для авто-детекции (таймер)
     let lastAutoDetect = 0;
-    let autoDetectInterval = 1000;       // не чаще 1 раза в секунду
+    const AUTO_DETECT_COOLDOWN = 1000;   // 1 секунда
 
-    // Элементы UI
+    // DOM элементы
     const autoBtn = document.getElementById('autoDetectBtn');
     const toggleBtn = document.getElementById('toggleModeBtn');
     const captureBtn = document.getElementById('captureBtn');
     const infoDiv = document.getElementById('infoPanel');
 
-    // ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
     function updateInfo(message, dimensions = null) {
         let html = message;
         if (dimensions) {
@@ -163,11 +166,8 @@
         infoDiv.innerHTML = html;
     }
 
-    // ---------- ГОМОГРАФИЯ (DLT через numeric) ----------
-    // srcPoints и dstPoints: массивы по 4 точки {x,y}
-    // возвращает матрицу 3x3
+    // ---------- ГОМОГРАФИЯ (DLT) ----------
     function computeHomography(src, dst) {
-        // Строим матрицу A размера 8x8 (система Ah = 0)
         const A = [];
         for (let i = 0; i < 4; i++) {
             const x = src[i].x, y = src[i].y;
@@ -175,10 +175,8 @@
             A.push([-x, -y, -1, 0, 0, 0, x*u, y*u, u]);
             A.push([0, 0, 0, -x, -y, -1, x*v, y*v, v]);
         }
-        // Решаем Ah = 0 -> собственный вектор с минимальным собственным значением
         const svd = numeric.svd(A);
-        const h = svd.V.slice(0, 9).map(v => v[8]); // последний столбец V
-        // Нормализуем
+        const h = svd.V.slice(0, 9).map(v => v[8]);
         const H = numeric.rep([3,3], 0);
         for (let i=0; i<3; i++)
             for (let j=0; j<3; j++)
@@ -186,28 +184,21 @@
         return H;
     }
 
-    // Применить гомографию к точке (x,y) пиксельной -> мм
     function applyHomography(x, y, H) {
-        const denominator = H[2][0]*x + H[2][1]*y + H[2][2];
-        if (Math.abs(denominator) < 1e-6) return null;
-        const mmX = (H[0][0]*x + H[0][1]*y + H[0][2]) / denominator;
-        const mmY = (H[1][0]*x + H[1][1]*y + H[1][2]) / denominator;
+        const denom = H[2][0]*x + H[2][1]*y + H[2][2];
+        if (Math.abs(denom) < 1e-6) return null;
+        const mmX = (H[0][0]*x + H[0][1]*y + H[0][2]) / denom;
+        const mmY = (H[1][0]*x + H[1][1]*y + H[1][2]) / denom;
         return { x: mmX, y: mmY };
     }
 
-    // Расстояние между двумя точками в мм
     function distanceMm(p1, p2) {
-        const dx = p1.x - p2.x;
-        const dy = p1.y - p2.y;
-        return Math.hypot(dx, dy);
+        return Math.hypot(p1.x - p2.x, p1.y - p2.y);
     }
 
-    // Обновить гомографию по найденному QR
     function updateHomographyFromQR(corners) {
         if (!corners || corners.length !== 4) return false;
-        // Пиксельные углы QR (в порядке: верхний-левый, верхний-правый, нижний-правый, нижний-левый)
         const srcPx = corners.map(c => ({ x: c.x, y: c.y }));
-        // Реальные координаты в мм (QR 46x46)
         const dstMm = [
             { x: 0, y: 0 },
             { x: QR_REAL_W, y: 0 },
@@ -219,21 +210,19 @@
             qrCornersPx = srcPx;
             return true;
         } catch(e) {
-            console.warn("Гомография не удалась", e);
+            console.warn("Гомография ошибка", e);
             return false;
         }
     }
 
-    // ---------- АВТО-ДЕТЕКЦИЯ ОБЪЕКТА (BFS по центральной зоне) ----------
-    // Возвращает { width_mm, height_mm, angle_deg, bboxPx } или null
+    // ---------- АВТО-ДЕТЕКЦИЯ ОБЪЕКТА (центральная область, BFS) ----------
     function autoDetectObjectFromCanvas(sourceCanvas) {
         if (!homographyMatrix) {
             updateInfo("⚠️ QR не найден, авто-детекция невозможна");
             return null;
         }
-        // 1. Берём уменьшенную копию области (центральные 300x300)
         const w = sourceCanvas.width, h = sourceCanvas.height;
-        const cropSize = Math.min(w, h, 400); // зона до 400px
+        const cropSize = Math.min(w, h, 400);
         const cropX = (w - cropSize)/2;
         const cropY = (h - cropSize)/2;
         
@@ -245,8 +234,7 @@
         const imgData = ctx.getImageData(0, 0, cropSize, cropSize);
         const data = imgData.data;
         
-        // 2. Бинаризация по порогу яркости (предполагаем объект темнее фона)
-        //    Вычисляем среднюю яркость центральной области для адаптивности
+        // Адаптивный порог: объект темнее фона (можно поменять знак)
         let sum = 0;
         for (let i=0; i<data.length; i+=4) {
             const gray = 0.2126*data[i] + 0.7152*data[i+1] + 0.0722*data[i+2];
@@ -254,7 +242,6 @@
         }
         const avgBright = sum / (cropSize*cropSize);
         const threshold = avgBright * 0.85; // объект темнее на 15%
-        // Создаём бинарную матрицу (true = объект)
         const binary = Array(cropSize).fill().map(() => Array(cropSize).fill(false));
         for (let y=0; y<cropSize; y++) {
             for (let x=0; x<cropSize; x++) {
@@ -264,20 +251,19 @@
             }
         }
         
-        // 3. BFS для поиска самого большого компонента (8-связность)
+        // BFS (8-связность)
         let visited = Array(cropSize).fill().map(() => Array(cropSize).fill(false));
         let bestComponent = [];
         const dirs = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
-        
         for (let y=0; y<cropSize; y++) {
             for (let x=0; x<cropSize; x++) {
                 if (binary[y][x] && !visited[y][x]) {
                     const queue = [[x,y]];
                     visited[y][x] = true;
-                    const component = [];
+                    const comp = [];
                     while (queue.length) {
                         const [cx, cy] = queue.shift();
-                        component.push([cx, cy]);
+                        comp.push([cx, cy]);
                         for (let d of dirs) {
                             const nx = cx + d[0], ny = cy + d[1];
                             if (nx>=0 && nx<cropSize && ny>=0 && ny<cropSize && binary[ny][nx] && !visited[ny][nx]) {
@@ -286,88 +272,65 @@
                             }
                         }
                     }
-                    if (component.length > bestComponent.length) bestComponent = component;
+                    if (comp.length > bestComponent.length) bestComponent = comp;
                 }
             }
         }
-        
-        if (bestComponent.length < 50) { // слишком маленький шум
-            updateInfo("📭 Объект не найден (слишком мал или нет контраста)");
+        if (bestComponent.length < 50) {
+            updateInfo("📭 Объект не найден (мало пикселей или низкий контраст)");
             return null;
         }
         
-        // 4. Находим bounding box компонента
-        let minX = cropSize, minY = cropSize, maxX = 0, maxY = 0;
-        for (let [px, py] of bestComponent) {
-            if (px < minX) minX = px;
-            if (px > maxX) maxX = px;
-            if (py < minY) minY = py;
-            if (py > maxY) maxY = py;
+        // Bounding box
+        let minX=cropSize, minY=cropSize, maxX=0, maxY=0;
+        for (let [px,py] of bestComponent) {
+            if (px<minX) minX=px;
+            if (px>maxX) maxX=px;
+            if (py<minY) minY=py;
+            if (py>maxY) maxY=py;
         }
-        // Поворот: простой PCA для угла наклона
+        // PCA для угла (простой)
         let sumX=0, sumY=0;
         for(let [px,py] of bestComponent) { sumX+=px; sumY+=py; }
         const cx = sumX/bestComponent.length;
         const cy = sumY/bestComponent.length;
         let uxx=0, uyy=0, uxy=0;
         for(let [px,py] of bestComponent) {
-            const dx = px - cx;
-            const dy = py - cy;
+            const dx = px-cx, dy = py-cy;
             uxx += dx*dx;
             uyy += dy*dy;
             uxy += dx*dy;
         }
         let angle = 0.5 * Math.atan2(2*uxy, uxx - uyy);
-        // Получаем ориентированный прямоугольник (поворачиваем bbox)
-        const w_bbox = maxX - minX;
-        const h_bbox = maxY - minY;
-        // Угол в градусах
-        let angleDeg = angle * 180 / Math.PI;
-        
-        // Координаты углов bounding box в пикселях (в системе crop, затем переводим в глобальные пиксели)
+        const rotCos = Math.cos(angle);
+        const rotSin = Math.sin(angle);
         const cornersLocal = [
             {x: minX, y: minY}, {x: maxX, y: minY},
             {x: maxX, y: maxY}, {x: minX, y: maxY}
         ];
-        // Поворачиваем углы вокруг центра (cx,cy) для уточнения (опционально)
-        // Для простоты оставим axis-aligned, но объект может быть повёрнут — ошибка будет, но гомография скорректирует масштаб.
-        // Лучше повернуть сам прямоугольник:
-        const rotCos = Math.cos(angle);
-        const rotSin = Math.sin(angle);
-        const rotatedCorners = cornersLocal.map(p => {
-            const dx = p.x - cx;
-            const dy = p.y - cy;
-            return {
-                x: cx + dx*rotCos - dy*rotSin,
-                y: cy + dx*rotSin + dy*rotCos
-            };
-        });
-        
-        // Переводим углы в глобальные пиксельные координаты (с учётом crop)
+        const rotatedCorners = cornersLocal.map(p => ({
+            x: cx + (p.x-cx)*rotCos - (p.y-cy)*rotSin,
+            y: cy + (p.x-cx)*rotSin + (p.y-cy)*rotCos
+        }));
         const globalCorners = rotatedCorners.map(p => ({
             x: p.x + cropX,
             y: p.y + cropY
         }));
-        
-        // Применяем гомографию для получения размеров в мм
         const mmCorners = globalCorners.map(p => applyHomography(p.x, p.y, homographyMatrix));
         if (mmCorners.some(c => !c)) return null;
-        // Вычисляем ширину как среднее между верхней и нижней стороной
         const width1 = distanceMm(mmCorners[0], mmCorners[1]);
         const width2 = distanceMm(mmCorners[3], mmCorners[2]);
         const height1 = distanceMm(mmCorners[0], mmCorners[3]);
         const height2 = distanceMm(mmCorners[1], mmCorners[2]);
         const finalWidth = (width1+width2)/2;
         const finalHeight = (height1+height2)/2;
-        
-        return { width: finalWidth, height: finalHeight, angle: angleDeg, cornersPx: globalCorners };
+        return { width: finalWidth, height: finalHeight, angle: angle*180/Math.PI, cornersPx: globalCorners };
     }
     
-    // ---------- ОТРИСОВКА НА ОВЕРЛЕЕ ----------
+    // ---------- ОТРИСОВКА ----------
     function drawOverlay() {
         if (!overlayCtx || !videoCanvas) return;
         overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        // Рисуем QR углы
         if (qrCornersPx) {
             overlayCtx.beginPath();
             overlayCtx.strokeStyle = '#00ffcc';
@@ -380,7 +343,6 @@
                 overlayCtx.stroke();
             }
         }
-        // Ручные точки
         if (manualMode) {
             for (let p of pointsManual) {
                 overlayCtx.beginPath();
@@ -400,7 +362,6 @@
                 overlayCtx.stroke();
             }
         } else if (measuredMm && measuredMm.cornersPx) {
-            // Рисуем найденный авто-объект
             overlayCtx.beginPath();
             overlayCtx.strokeStyle = '#ff6b6b';
             overlayCtx.lineWidth = 3;
@@ -415,7 +376,7 @@
         }
     }
     
-    // ---------- РУЧНОЕ ИЗМЕРЕНИЕ ----------
+    // ---------- РУЧНОЙ РЕЖИМ ----------
     function handleCanvasTouch(e) {
         if (!manualMode) return;
         e.preventDefault();
@@ -434,10 +395,8 @@
         let canvasY = (clientY - rect.top) * scaleY;
         canvasX = Math.min(Math.max(0, canvasX), videoCanvas.width);
         canvasY = Math.min(Math.max(0, canvasY), videoCanvas.height);
-        
         pointsManual.push({x: canvasX, y: canvasY});
         if (pointsManual.length > 2) pointsManual.shift();
-        
         if (pointsManual.length === 2 && homographyMatrix) {
             const p1mm = applyHomography(pointsManual[0].x, pointsManual[0].y, homographyMatrix);
             const p2mm = applyHomography(pointsManual[1].x, pointsManual[1].y, homographyMatrix);
@@ -452,19 +411,17 @@
         drawOverlay();
     }
     
-    // ---------- АВТО-ДЕТЕКЦИЯ ПО ЗАПРОСУ ----------
     async function runAutoDetection() {
         if (!videoCanvas || !homographyMatrix) {
             updateInfo("⏳ Подождите, QR ещё не распознан...");
             return;
         }
         const now = Date.now();
-        if (now - lastAutoDetect < autoDetectInterval) {
-            updateInfo("🔄 Авто-поиск не чаще 1 раза в секунду");
+        if (now - lastAutoDetect < AUTO_DETECT_COOLDOWN) {
+            updateInfo("🔄 Подождите 1 секунду перед повтором");
             return;
         }
         lastAutoDetect = now;
-        // Копируем текущий кадр с videoCanvas
         const result = autoDetectObjectFromCanvas(videoCanvas);
         if (result) {
             measuredMm = { width: result.width, height: result.height, cornersPx: result.cornersPx };
@@ -475,7 +432,6 @@
         drawOverlay();
     }
     
-    // ---------- ЗАХВАТ ФОТО С РЕЗУЛЬТАТАМИ ----------
     function captureWithResults() {
         if (!videoCanvas) return;
         const captureCanvas = document.createElement('canvas');
@@ -483,9 +439,7 @@
         captureCanvas.height = videoCanvas.height;
         const ctx = captureCanvas.getContext('2d');
         ctx.drawImage(videoCanvas, 0, 0);
-        // Поверх рисуем оверлей (QR и измерения)
         ctx.drawImage(overlayCanvas, 0, 0);
-        // Добавляем текст с размерами
         let sizeText = "MI-AI\n";
         if (measuredMm) {
             if (measuredMm.height) sizeText += `${measuredMm.width.toFixed(1)} x ${measuredMm.height.toFixed(1)} мм`;
@@ -505,7 +459,7 @@
         link.click();
     }
     
-    // ---------- ОСНОВНОЙ ЦИКЛ (захват видео и детекция QR) ----------
+    // ---------- ОСНОВНОЙ ЦИКЛ (захват и QR) ----------
     function processFrame() {
         if (!video || !videoCanvas || !videoCtx) return;
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
@@ -517,9 +471,11 @@
                 overlayCanvas.width = w;
                 overlayCanvas.height = h;
                 overlayCtx = overlayCanvas.getContext('2d');
+                // Обновим wrapper под соотношение
+                const wrapper = document.getElementById('videoWrapper');
+                wrapper.style.aspectRatio = w/h;
             }
             videoCtx.drawImage(video, 0, 0, videoCanvas.width, videoCanvas.height);
-            // Детекция QR не чаще 5 раз в секунду
             const now = Date.now();
             if (now - lastQrTimestamp > 200) {
                 lastQrTimestamp = now;
@@ -527,7 +483,7 @@
                 const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
                 if (code && code.corners) {
                     if (updateHomographyFromQR(code.corners)) {
-                        updateInfo("✅ QR детектирован, гомография готова");
+                        updateInfo("✅ QR найден, гомография готова");
                     }
                 } else {
                     homographyMatrix = null;
@@ -539,7 +495,6 @@
         requestAnimationFrame(processFrame);
     }
     
-    // ---------- ИНИЦИАЛИЗАЦИЯ КАМЕРЫ ----------
     async function initCamera() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
@@ -558,14 +513,14 @@
         }
     }
     
-    // ---------- НАСТРОЙКА КНОПОК ----------
+    // Кнопки
     autoBtn.addEventListener('click', () => {
         if (manualMode) {
             manualMode = false;
             toggleBtn.textContent = "✋ Ручной режим";
             toggleBtn.classList.remove('mode-active');
             pointsManual = [];
-            updateInfo("🟢 Авто-режим (кнопка Авто-поиск)");
+            updateInfo("🟢 Авто-режим, нажмите «Авто-поиск»");
         }
         runAutoDetection();
     });
