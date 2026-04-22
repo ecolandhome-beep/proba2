@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI | Автоизмеритель прямоугольников</title>
+    <title>MI-AI | Повёрнутая рамка</title>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
     <script>eruda.init();</script>
@@ -12,13 +12,12 @@
         body { margin: 0; background: #000; color: #0f0; font-family: monospace; height: 100dvh; display: flex; flex-direction: column; }
         #camera-container { flex: 1; position: relative; background: #111; overflow: hidden; touch-action: none; }
         video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
-        canvas { pointer-events: auto; }  /* для тапов */
+        canvas { pointer-events: auto; }
         .ui-panel { background: #0a0a0a; border-top: 2px solid #0f0; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         button { background: #000; color: #0f0; border: 2px solid #0f0; font-family: inherit; font-weight: bold; font-size: 14px; padding: 12px; border-radius: 8px; text-transform: uppercase; cursor: pointer; }
         button:active { background: #0f0; color: #000; }
         .status { grid-column: span 2; font-size: 12px; text-align: center; padding: 6px; background: #001500; border: 1px solid #0f0; border-radius: 6px; }
         .result { grid-column: span 2; font-size: 20px; text-align: center; font-weight: bold; }
-        .reset-btn { border-color: #f44; color: #f44; }
     </style>
 </head>
 <body>
@@ -34,29 +33,24 @@
 </div>
 
 <script>
-    // РЕАЛЬНЫЙ РАЗМЕР QR-МАРКЕРА (сторона в мм)
-    const QR_SIZE_MM = 46;   // измените под вашу распечатку
+    const QR_SIZE_MM = 46;   // размер стороны QR-маркера в мм
 
     let video = document.getElementById('video');
     let overlay = document.getElementById('overlay');
     let ctx = overlay.getContext('2d');
-    let stream = null;
     let cameraActive = false;
     let animationId = null;
 
-    // Данные QR
     let qrDetected = false;
-    let qrCorners = null;     // массив из 4 точек {x, y}
-    let scaleMMperPX = null;   // мм/пиксель (вычисляется по QR)
+    let qrCorners = null;
+    let scaleMMperPX = null;
 
-    // Данные выбранного объекта
-    let selectedContour = null;   // массив точек (4 угла) в пикселях
-    let objectWidth = 0, objectHeight = 0; // в мм
+    let allContours = [];        // список { points, rect, widthPx, heightPx, center }
+    let selectedIndex = -1;      // индекс выбранного объекта
 
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
 
-    // ========== КАМЕРА ==========
     async function startCamera() {
         if (cameraActive) return;
         try {
@@ -65,7 +59,7 @@
                 audio: false
             };
             statusDiv.innerText = "⏳ Запрос...";
-            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = stream;
             await video.play();
             overlay.width = video.videoWidth;
@@ -79,7 +73,7 @@
         }
     }
 
-    // ========== ДЕТЕКЦИЯ QR ==========
+    // Детекция QR и вычисление масштаба
     function detectQR(imageData, width, height) {
         const code = jsQR(imageData.data, width, height, { inversionAttempts: "dontInvert" });
         if (!code) return null;
@@ -89,7 +83,6 @@
             code.location.bottomRightCorner,
             code.location.bottomLeftCorner
         ];
-        // Вычисляем среднюю длину стороны в пикселях
         let sidePx = 0;
         for (let i = 0; i < corners.length; i++) {
             const p1 = corners[i];
@@ -101,9 +94,9 @@
         return { corners, mmPerPx };
     }
 
-    // ========== ПОИСК ПРЯМОУГОЛЬНЫХ КОНТУРОВ (исключая зону QR) ==========
-    function findRectangularContours(imageData, width, height, qrCorners) {
-        // Преобразуем в серый для Canny
+    // Поиск всех четырёхугольных контуров (аппроксимация)
+    function findQuadContours(imageData, width, height) {
+        // Преобразуем в灰度
         const gray = new Uint8ClampedArray(width * height);
         for (let i = 0; i < imageData.data.length; i += 4) {
             const r = imageData.data[i];
@@ -111,10 +104,7 @@
             const b = imageData.data[i+2];
             gray[i/4] = 0.299 * r + 0.587 * g + 0.114 * b;
         }
-
-        // Простой детектор границ (Canny-like) — для производительности используем приближение
-        // В браузере нет встроенного Canny, поэтому используем размытие и поиск градиента.
-        // Упрощённо: возьмём разность по соседним пикселям.
+        // Простой детектор границ (разность по соседям)
         const edges = new Uint8ClampedArray(width * height);
         for (let y = 1; y < height-1; y++) {
             for (let x = 1; x < width-1; x++) {
@@ -122,24 +112,16 @@
                 const gx = gray[idx+1] - gray[idx-1];
                 const gy = gray[idx+width] - gray[idx-width];
                 const mag = Math.hypot(gx, gy);
-                edges[idx] = mag > 30 ? 255 : 0;
+                edges[idx] = mag > 40 ? 255 : 0;
             }
         }
-
-        // Поиск контуров (простой алгоритм траверса — для демо используем библиотеку? Нет, напишем упрощённо)
-        // В реальном коде лучше использовать OpenCV.js, но мы от него отказались.
-        // Вместо этого: найдём все связные области (blob) и аппроксимируем их прямоугольником.
-        // Но это сложно. Предлагаю вернуться к цветовой сегментации для MVP.
-        // Однако для прямоугольных объектов на контрастном фоне можно найти bounding box по порогу яркости.
-        // Давайте сделаем так: ищем самый большой связный компонент по порогу (объект ярче фона).
+        // Поиск связных компонентов (BFS)
         const visited = new Uint8Array(width * height);
-        const contours = [];
-
+        const components = [];
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const idx = y * width + x;
                 if (edges[idx] && !visited[idx]) {
-                    // Заполняем контур (BFS)
                     const queue = [{x, y}];
                     const points = [];
                     visited[idx] = 1;
@@ -160,8 +142,8 @@
                             }
                         }
                     }
-                    if (points.length > 100) {
-                        // Аппроксимируем bounding box
+                    if (points.length > 200) {
+                        // Находим bounding box
                         let minX = width, maxX = 0, minY = height, maxY = 0;
                         for (let p of points) {
                             minX = Math.min(minX, p.x);
@@ -169,48 +151,127 @@
                             minY = Math.min(minY, p.y);
                             maxY = Math.max(maxY, p.y);
                         }
+                        // Аппроксимация до четырёхугольника (упрощённо: берём bounding box, но позже заменим на повёрнутый)
+                        // Для повёрнутого прямоугольника нам нужны сами точки контура. Пока оставим bounding box.
+                        // Но чтобы получить повёрнутую рамку, нужно использовать алгоритм поиска минимального описанного прямоугольника.
+                        // Реализуем его вручную? Сложно. Давайте вместо этого найдём convex hull и аппроксимируем 4 точками.
+                        // Для простоты оставим пока как есть, но позже добавлю поворот.
                         const rect = { x: minX, y: minY, width: maxX-minX, height: maxY-minY };
-                        contours.push({ points, rect });
+                        const center = { x: (minX+maxX)/2, y: (minY+maxY)/2 };
+                        const area = rect.width * rect.height;
+                        components.push({ points, rect, center, area });
                     }
                 }
             }
         }
-
         // Сортируем по площади
-        contours.sort((a,b) => (b.rect.width*b.rect.height) - (a.rect.width*a.rect.height));
-        if (contours.length === 0) return null;
-
-        // Выбираем первый, который не пересекается с QR
-        for (let c of contours) {
-            if (qrCorners) {
-                // Проверяем, не находится ли центр прямоугольника внутри QR
-                const centerX = c.rect.x + c.rect.width/2;
-                const centerY = c.rect.y + c.rect.height/2;
-                // Простая проверка: попадает ли центр в полигон QR
-                let inside = false;
-                // Упрощённо: считаем, что QR занимает свою область
-                const qrMinX = Math.min(...qrCorners.map(p=>p.x));
-                const qrMaxX = Math.max(...qrCorners.map(p=>p.x));
-                const qrMinY = Math.min(...qrCorners.map(p=>p.y));
-                const qrMaxY = Math.max(...qrCorners.map(p=>p.y));
-                if (centerX > qrMinX && centerX < qrMaxX && centerY > qrMinY && centerY < qrMaxY) {
-                    continue; // пропускаем сам QR
-                }
+        components.sort((a,b) => b.area - a.area);
+        // Превращаем каждый в повёрнутый прямоугольник (minAreaRect) — здесь упрощённо используем bounding box, но позже заменим.
+        // Для поворота нужно вычислить ориентацию по точкам контура. Это отдельная задача.
+        // В данном MVP оставляем как есть, но пользователь уже указал проблему — значит, нужно исправить.
+        // Я добавлю вычисление повёрнутого прямоугольника через метод главных компонент (PCA) для каждого контура.
+        // Реализуем сейчас.
+        const result = [];
+        for (let comp of components) {
+            // Находим повёрнутый прямоугольник (минимальной площади)
+            const pts = comp.points.map(p => [p.x, p.y]);
+            const rotatedRect = minAreaRect(pts);
+            if (rotatedRect) {
+                result.push({
+                    center: rotatedRect.center,
+                    widthPx: rotatedRect.width,
+                    heightPx: rotatedRect.height,
+                    angle: rotatedRect.angle,
+                    corners: rotatedRect.corners
+                });
             }
-            // Возвращаем углы bounding box (прямоугольник, выровненный по осям)
-            const r = c.rect;
-            const corners = [
-                {x: r.x, y: r.y},
-                {x: r.x + r.width, y: r.y},
-                {x: r.x + r.width, y: r.y + r.height},
-                {x: r.x, y: r.y + r.height}
-            ];
-            return corners;
         }
-        return null;
+        return result;
     }
 
-    // ========== ОСНОВНОЙ ЦИКЛ ==========
+    // Функция для вычисления минимального описанного прямоугольника по набору точек
+    function minAreaRect(points) {
+        if (points.length < 3) return null;
+        // Вычисляем convex hull (простой алгоритм Грэхема)
+        function cross(o, a, b) {
+            return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
+        }
+        let hull = [];
+        points.sort((a,b) => a[0]!==b[0] ? a[0]-b[0] : a[1]-b[1]);
+        const lower = [];
+        for (let p of points) {
+            while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+            lower.push(p);
+        }
+        const upper = [];
+        for (let i = points.length-1; i >=0; i--) {
+            const p = points[i];
+            while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+            upper.push(p);
+        }
+        hull = [...lower.slice(0, lower.length-1), ...upper.slice(0, upper.length-1)];
+        if (hull.length < 3) return null;
+
+        // Поиск минимального описанного прямоугольника (вращающиеся калиперы)
+        let bestArea = Infinity;
+        let bestRect = null;
+        const n = hull.length;
+        for (let i = 0; i < n; i++) {
+            const p1 = hull[i];
+            const p2 = hull[(i+1)%n];
+            const edge = [p2[0]-p1[0], p2[1]-p1[1]];
+            const len = Math.hypot(edge[0], edge[1]);
+            const dir = [edge[0]/len, edge[1]/len];
+            const perp = [-dir[1], dir[0]];
+            // Проецируем все точки
+            let minProj = Infinity, maxProj = -Infinity;
+            let minPerp = Infinity, maxPerp = -Infinity;
+            for (let pt of hull) {
+                const proj = dir[0]*(pt[0]-p1[0]) + dir[1]*(pt[1]-p1[1]);
+                const perpProj = perp[0]*(pt[0]-p1[0]) + perp[1]*(pt[1]-p1[1]);
+                minProj = Math.min(minProj, proj);
+                maxProj = Math.max(maxProj, proj);
+                minPerp = Math.min(minPerp, perpProj);
+                maxPerp = Math.max(maxPerp, perpProj);
+            }
+            const width = maxProj - minProj;
+            const height = maxPerp - minPerp;
+            const area = width * height;
+            if (area < bestArea) {
+                bestArea = area;
+                const centerX = p1[0] + dir[0]*(minProj + width/2) + perp[0]*(minPerp + height/2);
+                const centerY = p1[1] + dir[1]*(minProj + width/2) + perp[1]*(minPerp + height/2);
+                const corners = [
+                    [centerX + dir[0]*width/2 + perp[0]*height/2, centerY + dir[1]*width/2 + perp[1]*height/2],
+                    [centerX - dir[0]*width/2 + perp[0]*height/2, centerY - dir[1]*width/2 + perp[1]*height/2],
+                    [centerX - dir[0]*width/2 - perp[0]*height/2, centerY - dir[1]*width/2 - perp[1]*height/2],
+                    [centerX + dir[0]*width/2 - perp[0]*height/2, centerY + dir[1]*width/2 - perp[1]*height/2]
+                ];
+                bestRect = {
+                    center: {x: centerX, y: centerY},
+                    width: width,
+                    height: height,
+                    angle: Math.atan2(dir[1], dir[0]),
+                    corners: corners.map(p => ({x: p[0], y: p[1]}))
+                };
+            }
+        }
+        return bestRect;
+    }
+
+    // Отрисовка повёрнутого прямоугольника
+    function drawRotatedRect(ctx, rect, color, lineWidth=4) {
+        if (!rect || !rect.corners) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        ctx.moveTo(rect.corners[0].x, rect.corners[0].y);
+        for (let i=1; i<rect.corners.length; i++) ctx.lineTo(rect.corners[i].x, rect.corners[i].y);
+        ctx.closePath();
+        ctx.stroke();
+    }
+
+    // Обработка кадра
     function processFrame() {
         if (!cameraActive || !video.videoWidth) {
             animationId = requestAnimationFrame(processFrame);
@@ -223,13 +284,12 @@
         ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
         const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
 
-        // 1. Детекция QR
+        // QR
         const qr = detectQR(imageData, overlay.width, overlay.height);
         if (qr) {
             qrDetected = true;
             qrCorners = qr.corners;
             scaleMMperPX = qr.mmPerPx;
-            // Рисуем зелёную рамку QR
             ctx.strokeStyle = "#0f0";
             ctx.lineWidth = 3;
             ctx.beginPath();
@@ -237,50 +297,82 @@
             for (let i=1; i<qrCorners.length; i++) ctx.lineTo(qrCorners[i].x, qrCorners[i].y);
             ctx.closePath();
             ctx.stroke();
-            statusDiv.innerText = "✅ QR найден. Ищем объект...";
+            statusDiv.innerText = "✅ QR найден. Ищем объекты...";
         } else {
             qrDetected = false;
-            qrCorners = null;
             scaleMMperPX = null;
-            statusDiv.innerText = "⚠️ QR не виден. Поместите маркер в кадр.";
+            statusDiv.innerText = "⚠️ QR не виден.";
             animationId = requestAnimationFrame(processFrame);
             return;
         }
 
-        // 2. Поиск прямоугольного контура (объекта)
-        if (qrDetected && scaleMMperPX) {
-            const objectCorners = findRectangularContours(imageData, overlay.width, overlay.height, qrCorners);
-            if (objectCorners) {
-                selectedContour = objectCorners;
-                // Рисуем жёлтую рамку объекта
-                ctx.strokeStyle = "#ff0";
-                ctx.lineWidth = 4;
-                ctx.beginPath();
-                ctx.moveTo(objectCorners[0].x, objectCorners[0].y);
-                for (let i=1; i<objectCorners.length; i++) ctx.lineTo(objectCorners[i].x, objectCorners[i].y);
-                ctx.closePath();
-                ctx.stroke();
-
-                // Вычисляем размеры в мм (ширина и высота bounding box)
-                const widthPx = Math.hypot(objectCorners[1].x - objectCorners[0].x, objectCorners[1].y - objectCorners[0].y);
-                const heightPx = Math.hypot(objectCorners[2].x - objectCorners[1].x, objectCorners[2].y - objectCorners[1].y);
-                const widthMm = widthPx * scaleMMperPX;
-                const heightMm = heightPx * scaleMMperPX;
-                objectWidth = widthMm;
-                objectHeight = heightMm;
+        // Поиск всех четырёхугольных контуров
+        if (scaleMMperPX) {
+            allContours = findQuadContours(imageData, overlay.width, overlay.height);
+            // Отфильтровываем те, которые пересекаются с QR (по центру)
+            if (qrCorners) {
+                const qrMinX = Math.min(...qrCorners.map(p=>p.x));
+                const qrMaxX = Math.max(...qrCorners.map(p=>p.x));
+                const qrMinY = Math.min(...qrCorners.map(p=>p.y));
+                const qrMaxY = Math.max(...qrCorners.map(p=>p.y));
+                allContours = allContours.filter(cont => {
+                    const cx = cont.center.x;
+                    const cy = cont.center.y;
+                    return !(cx > qrMinX && cx < qrMaxX && cy > qrMinY && cy < qrMaxY);
+                });
+            }
+            // Если есть контуры, выбираем самый большой (по площади) или запоминаем все
+            if (allContours.length > 0) {
+                // Сортируем по площади (ширина*высота)
+                allContours.sort((a,b) => (b.widthPx*b.heightPx) - (a.widthPx*a.heightPx));
+                selectedIndex = 0;
+                const best = allContours[0];
+                const widthMm = best.widthPx * scaleMMperPX;
+                const heightMm = best.heightPx * scaleMMperPX;
                 distanceDiv.innerText = `${widthMm.toFixed(1)} x ${heightMm.toFixed(1)} mm`;
                 statusDiv.innerText = "Объект найден. Нажмите Сохранить.";
+                // Рисуем повёрнутую рамку выбранного объекта
+                drawRotatedRect(ctx, best, "#ff0", 4);
             } else {
-                selectedContour = null;
+                selectedIndex = -1;
                 distanceDiv.innerText = "--- mm";
-                statusDiv.innerText = "Объект не найден. Наведите на контрастный прямоугольник.";
+                statusDiv.innerText = "Объект не найден.";
             }
         }
 
         animationId = requestAnimationFrame(processFrame);
     }
 
-    // ========== СОХРАНЕНИЕ ФОТО ==========
+    // Тап для выбора другого объекта (поиск ближайшего контура к точке касания)
+    overlay.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (!scaleMMperPX || allContours.length === 0) return;
+        const rect = overlay.getBoundingClientRect();
+        const touch = e.touches[0];
+        const canvasX = (touch.clientX - rect.left) * (overlay.width / rect.width);
+        const canvasY = (touch.clientY - rect.top) * (overlay.height / rect.height);
+        let bestIdx = -1;
+        let bestDist = Infinity;
+        for (let i=0; i<allContours.length; i++) {
+            const c = allContours[i];
+            const dx = c.center.x - canvasX;
+            const dy = c.center.y - canvasY;
+            const dist = Math.hypot(dx, dy);
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestIdx = i;
+            }
+        }
+        if (bestIdx !== -1 && bestDist < 100) {
+            selectedIndex = bestIdx;
+            const selected = allContours[selectedIndex];
+            const widthMm = selected.widthPx * scaleMMperPX;
+            const heightMm = selected.heightPx * scaleMMperPX;
+            distanceDiv.innerText = `${widthMm.toFixed(1)} x ${heightMm.toFixed(1)} mm`;
+            statusDiv.innerText = "Выбран другой объект.";
+        }
+    });
+
     function saveSnapshot() {
         if (!cameraActive || !overlay.width) {
             alert("Камера не активна");
@@ -294,8 +386,11 @@
         snapCtx.fillStyle = "#0f0";
         snapCtx.font = "20px monospace";
         snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
-        if (selectedContour && scaleMMperPX) {
-            const sizeText = `${objectWidth.toFixed(1)} x ${objectHeight.toFixed(1)} mm`;
+        if (selectedIndex !== -1 && allContours[selectedIndex] && scaleMMperPX) {
+            const sel = allContours[selectedIndex];
+            const w = (sel.widthPx * scaleMMperPX).toFixed(1);
+            const h = (sel.heightPx * scaleMMperPX).toFixed(1);
+            const sizeText = `${w} x ${h} mm`;
             snapCtx.fillStyle = "yellow";
             snapCtx.font = "bold 28px monospace";
             snapCtx.fillText(sizeText, 20, 90);
@@ -312,16 +407,6 @@
             </body>
         `);
     }
-
-    // ========== ТАП ДЛЯ ВЫБОРА ДРУГОГО ОБЪЕКТА (будет доработано) ==========
-    // Пока оставим автоматический выбор самого крупного.
-
-    // ========== ИНИЦИАЛИЗАЦИЯ ==========
-    overlay.addEventListener('touchstart', (e) => {
-        // В будущем: тап для выбора другого объекта
-        e.preventDefault();
-        // Пока ничего не делаем
-    });
 </script>
 </body>
 </html>
