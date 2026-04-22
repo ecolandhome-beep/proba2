@@ -3,24 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI | QR-маркер 46mm</title>
+    <title>MI-AI | Сбор датасета для 3D</title>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
     <script>eruda.init();</script>
     <style>
         * { box-sizing: border-box; user-select: none; -webkit-tap-highlight-color: transparent; }
         body { margin: 0; background: #000; color: #0f0; font-family: monospace; height: 100dvh; display: flex; flex-direction: column; }
-        #camera-container { flex: 1; position: relative; background: #111; overflow: hidden; }
+        #camera-container { flex: 1; position: relative; background: #111; overflow: hidden; touch-action: none; }
         video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
-        /* canvas должен получать касания, поэтому убираем pointer-events: none */
-        canvas { touch-action: none; }  /* запрещаем масштабирование и скролл при касаниях */
-        .ui-panel { background: #0a0a0a; border-top: 2px solid #0f0; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        button { background: #000; color: #0f0; border: 2px solid #0f0; font-family: inherit; font-weight: bold; font-size: 14px; padding: 12px; border-radius: 8px; text-transform: uppercase; cursor: pointer; }
+        canvas { /* события включены */ }
+        .ui-panel { background: #0a0a0a; border-top: 2px solid #0f0; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        button { background: #000; color: #0f0; border: 2px solid #0f0; font-family: inherit; font-weight: bold; font-size: 12px; padding: 10px; border-radius: 8px; text-transform: uppercase; cursor: pointer; }
         button:active { background: #0f0; color: #000; }
-        .status { grid-column: span 2; font-size: 12px; text-align: center; padding: 6px; background: #001500; border: 1px solid #0f0; border-radius: 6px; }
-        .result { grid-column: span 2; font-size: 24px; text-align: center; font-weight: bold; letter-spacing: 2px; }
+        .status { grid-column: span 2; font-size: 11px; text-align: center; padding: 4px; background: #001500; border: 1px solid #0f0; border-radius: 6px; }
+        .result { grid-column: span 2; font-size: 20px; text-align: center; font-weight: bold; }
+        .badge { display: inline-block; background: #0f0; color: #000; padding: 2px 8px; border-radius: 20px; font-size: 12px; margin-left: 6px; }
         .reset-btn { border-color: #f44; color: #f44; }
-        .start-btn { background: #0f0; color: #000; border-color: #0f0; }
+        .save-btn { border-color: #ff0; color: #ff0; }
     </style>
 </head>
 <body>
@@ -29,30 +30,36 @@
     <canvas id="overlay"></canvas>
 </div>
 <div class="ui-panel">
-    <div class="status" id="statusMsg">⚠️ Нажмите «СТАРТ» для доступа к камере</div>
+    <div class="status" id="statusMsg">⚠️ Нажмите «СТАРТ»</div>
     <div class="result" id="distanceResult">--- mm</div>
-    <button id="startBtn" class="start-btn" onclick="startCamera()">▶ СТАРТ</button>
-    <button id="resetBtn" class="reset-btn" onclick="resetPoints()">СБРОС ТОЧЕК</button>
-    <button id="saveBtn" onclick="saveSnapshot()">СОХРАНИТЬ ФОТО</button>
+    <button id="startBtn" style="background:#0f0;color:#000;" onclick="startCamera()">▶ СТАРТ</button>
+    <button id="resetPointsBtn" class="reset-btn" onclick="resetPoints()">СБРОС ТОЧЕК</button>
+    <button id="addFrameBtn" class="save-btn" onclick="addFrame()">📸 ДОБАВИТЬ КАДР</button>
+    <button id="exportBtn" onclick="exportDataset()">📦 ЭКСПОРТ</button>
+    <button id="clearFramesBtn" class="reset-btn" onclick="clearFrames()">🗑 ОЧИСТИТЬ КАДРЫ</button>
 </div>
 
 <script>
-    // РЕАЛЬНЫЙ РАЗМЕР QR-МАРКЕРА (сторона в мм)
-    const QR_SIZE_MM = 46;   // ⚠️ ИЗМЕНИТЕ, ЕСЛИ ВАШ РАЗМЕР ДРУГОЙ
+    // ========== НАСТРОЙКИ ==========
+    const QR_SIZE_MM = 46;   // реальный размер стороны QR-маркера (мм)
 
+    // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
     let video = document.getElementById('video');
     let overlay = document.getElementById('overlay');
     let ctx = overlay.getContext('2d');
     let stream = null;
-    let points = [];
-    let scaleMMperPX = null;
+    let points = [];               // точки замера (0,1 или 2)
+    let scaleMMperPX = null;      // мм/пиксель
     let markerDetected = false;
     let cameraActive = false;
     let animationId = null;
+    let frames = [];               // массив сохранённых canvas (DataURL)
 
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
+    const addFrameBtn = document.getElementById('addFrameBtn');
 
+    // ========== КАМЕРА ==========
     async function startCamera() {
         if (cameraActive) return;
         try {
@@ -60,35 +67,32 @@
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
                 audio: false
             };
-            statusDiv.innerText = "⏳ Запрос разрешения...";
+            statusDiv.innerText = "⏳ Запрос...";
             stream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = stream;
             await video.play();
             overlay.width = video.videoWidth;
             overlay.height = video.videoHeight;
             cameraActive = true;
-            statusDiv.innerText = "🟢 Камера активна. Ищем QR-маркер 46×46 мм...";
+            statusDiv.innerText = "🟢 Камера активна. Ищем QR...";
             if (animationId) cancelAnimationFrame(animationId);
             animationId = requestAnimationFrame(processFrame);
         } catch (err) {
-            statusDiv.innerText = "❌ Ошибка доступа: " + err.message;
-            console.error(err);
+            statusDiv.innerText = "❌ Ошибка: " + err.message;
         }
     }
 
+    // ========== ДЕТЕКЦИЯ QR И РИСОВАНИЕ ==========
     function processFrame() {
         if (!cameraActive || !video.videoWidth) {
             animationId = requestAnimationFrame(processFrame);
             return;
         }
-
         if (overlay.width !== video.videoWidth || overlay.height !== video.videoHeight) {
             overlay.width = video.videoWidth;
             overlay.height = video.videoHeight;
         }
-
         ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
-        
         const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
         const code = jsQR(imageData.data, overlay.width, overlay.height, { inversionAttempts: "dontInvert" });
 
@@ -108,6 +112,7 @@
             ctx.closePath();
             ctx.stroke();
 
+            // Вычисление масштаба
             let sidePx = 0;
             for (let i = 0; i < corners.length; i++) {
                 const p1 = corners[i];
@@ -120,7 +125,7 @@
         } else {
             markerDetected = false;
             scaleMMperPX = null;
-            statusDiv.innerText = "⚠️ QR-маркер не виден. Поместите его в кадр.";
+            statusDiv.innerText = "⚠️ QR не виден.";
         }
 
         // Отрисовка точек замера
@@ -151,20 +156,20 @@
         } else {
             distanceDiv.innerText = "--- mm";
         }
-
         animationId = requestAnimationFrame(processFrame);
     }
 
+    // ========== УСТАНОВКА ТОЧЕК (касания) ==========
     function handleTouch(e) {
-        e.preventDefault();  // предотвращаем масштабирование и скролл
         if (!cameraActive) {
-            statusDiv.innerText = "❌ Сначала нажмите «СТАРТ».";
+            statusDiv.innerText = "❌ Сначала СТАРТ";
             return;
         }
         if (!markerDetected) {
-            statusDiv.innerText = "❌ QR-маркер не обнаружен.";
+            statusDiv.innerText = "❌ QR не обнаружен";
             return;
         }
+        e.preventDefault();
         const rect = overlay.getBoundingClientRect();
         const scaleX = overlay.width / rect.width;
         const scaleY = overlay.height / rect.height;
@@ -172,10 +177,14 @@
         const canvasX = (touch.clientX - rect.left) * scaleX;
         const canvasY = (touch.clientY - rect.top) * scaleY;
 
-        if (points.length === 2) points = [];
+        if (points.length === 2) {
+            // Если уже две точки, не добавляем новые (пользователь должен нажать «СБРОС ТОЧЕК»)
+            statusDiv.innerText = "Две точки уже есть. Нажмите СБРОС.";
+            return;
+        }
         points.push({ x: canvasX, y: canvasY });
         if (points.length === 2) {
-            statusDiv.innerText = "Замер выполнен. «СБРОС» для нового.";
+            statusDiv.innerText = "Замер готов. Добавьте кадр или сбросьте точки.";
         } else {
             statusDiv.innerText = "Тапните вторую точку.";
         }
@@ -184,42 +193,92 @@
     function resetPoints() {
         points = [];
         distanceDiv.innerText = "--- mm";
-        statusDiv.innerText = "Точки сброшены. Замеряйте заново.";
+        statusDiv.innerText = "Точки сброшены.";
     }
 
-    function saveSnapshot() {
-        if (!cameraActive || !overlay.width) {
+    // ========== УПРАВЛЕНИЕ ДАТАСЕТОМ ==========
+    function addFrame() {
+        if (!cameraActive) {
             alert("Камера не активна");
             return;
         }
-        const snapCanvas = document.createElement('canvas');
-        snapCanvas.width = overlay.width;
-        snapCanvas.height = overlay.height;
-        const snapCtx = snapCanvas.getContext('2d');
-        snapCtx.drawImage(overlay, 0, 0);
-        snapCtx.fillStyle = "#0f0";
-        snapCtx.font = "20px monospace";
-        snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
-        if (points.length === 2 && scaleMMperPX) {
-            const dist = distanceDiv.innerText;
-            snapCtx.fillStyle = "yellow";
-            snapCtx.font = "bold 28px monospace";
-            snapCtx.fillText(dist, 20, 90);
+        if (points.length !== 2) {
+            alert("Сначала сделайте замер (две точки)");
+            return;
         }
-        const dataUrl = snapCanvas.toDataURL('image/png');
-        const win = window.open();
-        win.document.write(`
-            <body style="margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
-                <img src="${dataUrl}" style="max-width:100%;max-height:85vh;border:1px solid #0f0;">
-                <p style="color:#0f0;font-family:monospace;margin-top:20px;text-align:center;">
-                    📸 Зажмите фото → "Сохранить в фото"
-                </p>
-                <button onclick="window.close()" style="background:#0f0;color:#000;padding:10px;margin-top:10px;">Закрыть</button>
-            </body>
-        `);
+        if (!scaleMMperPX) {
+            alert("QR-маркер не обнаружен");
+            return;
+        }
+        // Сохраняем текущий canvas как PNG
+        const dataUrl = overlay.toDataURL('image/png');
+        frames.push(dataUrl);
+        updateFrameCounter();
+        statusDiv.innerText = `Кадр ${frames.length} сохранён. Сделайте следующий ракурс.`;
+        // Автоматически сбрасываем точки для следующего замера
+        resetPoints();
     }
 
+    function clearFrames() {
+        frames = [];
+        updateFrameCounter();
+        statusDiv.innerText = "Все кадры удалены.";
+    }
+
+    function updateFrameCounter() {
+        let badge = document.getElementById('frameCounter');
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.id = 'frameCounter';
+            badge.className = 'badge';
+            addFrameBtn.appendChild(badge);
+        }
+        badge.innerText = frames.length;
+    }
+
+    // ========== ЭКСПОРТ В ZIP ==========
+    async function exportDataset() {
+        if (frames.length === 0) {
+            alert("Нет сохранённых кадров.");
+            return;
+        }
+        if (!scaleMMperPX) {
+            alert("Масштаб не определён (QR не виден)");
+            return;
+        }
+        const zip = new JSZip();
+        const folder = zip.folder("MI_AI_dataset");
+
+        // Добавляем JSON с метаданными
+        const metadata = {
+            timestamp: new Date().toISOString(),
+            qr_size_mm: QR_SIZE_MM,
+            scale_mm_per_px: scaleMMperPX,
+            frames_count: frames.length,
+            device: navigator.userAgent
+        };
+        folder.file("metadata.json", JSON.stringify(metadata, null, 2));
+
+        // Добавляем каждый кадр
+        for (let i = 0; i < frames.length; i++) {
+            const base64 = frames[i].split(',')[1];
+            folder.file(`frame_${String(i+1).padStart(3,'0')}.png`, base64, { base64: true });
+        }
+
+        const content = await zip.generateAsync({ type: "blob" });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(content);
+        link.download = `MI_AI_dataset_${Date.now()}.zip`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+        statusDiv.innerText = `Экспортировано ${frames.length} кадров.`;
+    }
+
+    // ========== ИНИЦИАЛИЗАЦИЯ ==========
     overlay.addEventListener('touchstart', handleTouch, { passive: false });
+    window.addEventListener('touchmove', function(e) { if (e.target === overlay) e.preventDefault(); }, { passive: false });
+    // кнопки уже имеют onclick
+    updateFrameCounter();
 </script>
 </body>
 </html>
