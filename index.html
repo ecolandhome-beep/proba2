@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MI-AI | Повёрнутая рамка</title>
+    <title>MI-AI | Гомография (точные размеры с любого ракурса)</title>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
     <script>eruda.init();</script>
@@ -33,7 +33,7 @@
 </div>
 
 <script>
-    const QR_SIZE_MM = 46;   // размер стороны QR-маркера в мм
+    const QR_SIZE_MM = 46;   // реальный размер QR-маркера (сторона)
 
     let video = document.getElementById('video');
     let overlay = document.getElementById('overlay');
@@ -42,11 +42,10 @@
     let animationId = null;
 
     let qrDetected = false;
-    let qrCorners = null;
-    let scaleMMperPX = null;
-
-    let allContours = [];        // список { points, rect, widthPx, heightPx, center }
-    let selectedIndex = -1;      // индекс выбранного объекта
+    let qrCornersPx = null;      // 4 точки в пикселях (на экране)
+    let homography = null;        // матрица 3x3 (гомография)
+    let allContours = [];
+    let selectedIndex = -1;
 
     const statusDiv = document.getElementById('statusMsg');
     const distanceDiv = document.getElementById('distanceResult');
@@ -73,30 +72,61 @@
         }
     }
 
-    // Детекция QR и вычисление масштаба
-    function detectQR(imageData, width, height) {
+    // Детекция QR и вычисление гомографии
+    function detectAndComputeHomography(imageData, width, height) {
         const code = jsQR(imageData.data, width, height, { inversionAttempts: "dontInvert" });
         if (!code) return null;
-        const corners = [
+        const cornersPx = [
             code.location.topLeftCorner,
             code.location.topRightCorner,
             code.location.bottomRightCorner,
             code.location.bottomLeftCorner
         ];
-        let sidePx = 0;
-        for (let i = 0; i < corners.length; i++) {
-            const p1 = corners[i];
-            const p2 = corners[(i+1)%4];
-            sidePx += Math.hypot(p1.x - p2.x, p1.y - p2.y);
-        }
-        sidePx /= 4;
-        const mmPerPx = QR_SIZE_MM / sidePx;
-        return { corners, mmPerPx };
+        // Реальные координаты углов QR в мм (плоскость маркера)
+        const realCorners = [
+            {x: 0, y: 0},
+            {x: QR_SIZE_MM, y: 0},
+            {x: QR_SIZE_MM, y: QR_SIZE_MM},
+            {x: 0, y: QR_SIZE_MM}
+        ];
+        // Вычисляем гомографию (решаем систему H * real = px)
+        // Для 4 точек используем стандартный алгоритм DLT.
+        const H = computeHomography(cornersPx, realCorners);
+        if (!H) return null;
+        return { cornersPx, homography: H };
     }
 
-    // Поиск всех четырёхугольных контуров (аппроксимация)
-    function findQuadContours(imageData, width, height) {
-        // Преобразуем в灰度
+    // Функция вычисления гомографии (DLT для 4 точек)
+    function computeHomography(dst, src) {
+        // src – реальные координаты (мм), dst – пиксельные
+        const A = [];
+        for (let i = 0; i < 4; i++) {
+            const [x, y] = [src[i].x, src[i].y];
+            const [u, v] = [dst[i].x, dst[i].y];
+            A.push([-x, -y, -1, 0, 0, 0, u*x, u*y, u]);
+            A.push([0, 0, 0, -x, -y, -1, v*x, v*y, v]);
+        }
+        // Решаем Ah = 0
+        const svd = numeric.svd(A);
+        const H = svd.V.slice(-1)[0]; // последний правый сингулярный вектор
+        return [
+            [H[0], H[1], H[2]],
+            [H[3], H[4], H[5]],
+            [H[6], H[7], H[8]]
+        ];
+    }
+
+    // Применение гомографии к точке (x,y) – возвращает реальные координаты (мм)
+    function applyHomography(H, x, y) {
+        const z = H[2][0]*x + H[2][1]*y + H[2][2];
+        const u = (H[0][0]*x + H[0][1]*y + H[0][2]) / z;
+        const v = (H[1][0]*x + H[1][1]*y + H[1][2]) / z;
+        return { x: u, y: v };
+    }
+
+    // Поиск всех прямоугольных контуров (повёрнутых)
+    function findRotatedRects(imageData, width, height) {
+        // Преобразование в灰度
         const gray = new Uint8ClampedArray(width * height);
         for (let i = 0; i < imageData.data.length; i += 4) {
             const r = imageData.data[i];
@@ -104,7 +134,7 @@
             const b = imageData.data[i+2];
             gray[i/4] = 0.299 * r + 0.587 * g + 0.114 * b;
         }
-        // Простой детектор границ (разность по соседям)
+        // Детектор границ (Canny-like)
         const edges = new Uint8ClampedArray(width * height);
         for (let y = 1; y < height-1; y++) {
             for (let x = 1; x < width-1; x++) {
@@ -143,92 +173,59 @@
                         }
                     }
                     if (points.length > 200) {
-                        // Находим bounding box
-                        let minX = width, maxX = 0, minY = height, maxY = 0;
-                        for (let p of points) {
-                            minX = Math.min(minX, p.x);
-                            maxX = Math.max(maxX, p.x);
-                            minY = Math.min(minY, p.y);
-                            maxY = Math.max(maxY, p.y);
+                        // Находим минимальный описанный повёрнутый прямоугольник (convex hull + rotating calipers)
+                        const rotatedRect = minAreaRect(points);
+                        if (rotatedRect) {
+                            components.push(rotatedRect);
                         }
-                        // Аппроксимация до четырёхугольника (упрощённо: берём bounding box, но позже заменим на повёрнутый)
-                        // Для повёрнутого прямоугольника нам нужны сами точки контура. Пока оставим bounding box.
-                        // Но чтобы получить повёрнутую рамку, нужно использовать алгоритм поиска минимального описанного прямоугольника.
-                        // Реализуем его вручную? Сложно. Давайте вместо этого найдём convex hull и аппроксимируем 4 точками.
-                        // Для простоты оставим пока как есть, но позже добавлю поворот.
-                        const rect = { x: minX, y: minY, width: maxX-minX, height: maxY-minY };
-                        const center = { x: (minX+maxX)/2, y: (minY+maxY)/2 };
-                        const area = rect.width * rect.height;
-                        components.push({ points, rect, center, area });
                     }
                 }
             }
         }
         // Сортируем по площади
-        components.sort((a,b) => b.area - a.area);
-        // Превращаем каждый в повёрнутый прямоугольник (minAreaRect) — здесь упрощённо используем bounding box, но позже заменим.
-        // Для поворота нужно вычислить ориентацию по точкам контура. Это отдельная задача.
-        // В данном MVP оставляем как есть, но пользователь уже указал проблему — значит, нужно исправить.
-        // Я добавлю вычисление повёрнутого прямоугольника через метод главных компонент (PCA) для каждого контура.
-        // Реализуем сейчас.
-        const result = [];
-        for (let comp of components) {
-            // Находим повёрнутый прямоугольник (минимальной площади)
-            const pts = comp.points.map(p => [p.x, p.y]);
-            const rotatedRect = minAreaRect(pts);
-            if (rotatedRect) {
-                result.push({
-                    center: rotatedRect.center,
-                    widthPx: rotatedRect.width,
-                    heightPx: rotatedRect.height,
-                    angle: rotatedRect.angle,
-                    corners: rotatedRect.corners
-                });
-            }
-        }
-        return result;
+        components.sort((a,b) => (b.width*b.height) - (a.width*a.height));
+        return components;
     }
 
-    // Функция для вычисления минимального описанного прямоугольника по набору точек
+    // Функция minAreaRect (convex hull + rotating calipers)
     function minAreaRect(points) {
         if (points.length < 3) return null;
-        // Вычисляем convex hull (простой алгоритм Грэхема)
+        // Convex hull (Graham scan)
         function cross(o, a, b) {
-            return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
+            return (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x);
         }
-        let hull = [];
-        points.sort((a,b) => a[0]!==b[0] ? a[0]-b[0] : a[1]-b[1]);
+        let pts = points.map(p => ({x: p.x, y: p.y}));
+        pts.sort((a,b) => a.x!==b.x ? a.x-b.x : a.y-b.y);
         const lower = [];
-        for (let p of points) {
+        for (let p of pts) {
             while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
             lower.push(p);
         }
         const upper = [];
-        for (let i = points.length-1; i >=0; i--) {
-            const p = points[i];
+        for (let i = pts.length-1; i >=0; i--) {
+            const p = pts[i];
             while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
             upper.push(p);
         }
-        hull = [...lower.slice(0, lower.length-1), ...upper.slice(0, upper.length-1)];
+        const hull = [...lower.slice(0, lower.length-1), ...upper.slice(0, upper.length-1)];
         if (hull.length < 3) return null;
 
-        // Поиск минимального описанного прямоугольника (вращающиеся калиперы)
+        // Rotating calipers
         let bestArea = Infinity;
         let bestRect = null;
         const n = hull.length;
         for (let i = 0; i < n; i++) {
             const p1 = hull[i];
             const p2 = hull[(i+1)%n];
-            const edge = [p2[0]-p1[0], p2[1]-p1[1]];
-            const len = Math.hypot(edge[0], edge[1]);
-            const dir = [edge[0]/len, edge[1]/len];
-            const perp = [-dir[1], dir[0]];
-            // Проецируем все точки
+            const edge = {x: p2.x - p1.x, y: p2.y - p1.y};
+            const len = Math.hypot(edge.x, edge.y);
+            const dir = {x: edge.x/len, y: edge.y/len};
+            const perp = {x: -dir.y, y: dir.x};
             let minProj = Infinity, maxProj = -Infinity;
             let minPerp = Infinity, maxPerp = -Infinity;
             for (let pt of hull) {
-                const proj = dir[0]*(pt[0]-p1[0]) + dir[1]*(pt[1]-p1[1]);
-                const perpProj = perp[0]*(pt[0]-p1[0]) + perp[1]*(pt[1]-p1[1]);
+                const proj = dir.x*(pt.x-p1.x) + dir.y*(pt.y-p1.y);
+                const perpProj = perp.x*(pt.x-p1.x) + perp.y*(pt.y-p1.y);
                 minProj = Math.min(minProj, proj);
                 maxProj = Math.max(maxProj, proj);
                 minPerp = Math.min(minPerp, perpProj);
@@ -239,20 +236,20 @@
             const area = width * height;
             if (area < bestArea) {
                 bestArea = area;
-                const centerX = p1[0] + dir[0]*(minProj + width/2) + perp[0]*(minPerp + height/2);
-                const centerY = p1[1] + dir[1]*(minProj + width/2) + perp[1]*(minPerp + height/2);
+                const centerX = p1.x + dir.x*(minProj + width/2) + perp.x*(minPerp + height/2);
+                const centerY = p1.y + dir.y*(minProj + width/2) + perp.y*(minPerp + height/2);
                 const corners = [
-                    [centerX + dir[0]*width/2 + perp[0]*height/2, centerY + dir[1]*width/2 + perp[1]*height/2],
-                    [centerX - dir[0]*width/2 + perp[0]*height/2, centerY - dir[1]*width/2 + perp[1]*height/2],
-                    [centerX - dir[0]*width/2 - perp[0]*height/2, centerY - dir[1]*width/2 - perp[1]*height/2],
-                    [centerX + dir[0]*width/2 - perp[0]*height/2, centerY + dir[1]*width/2 - perp[1]*height/2]
+                    {x: centerX + dir.x*width/2 + perp.x*height/2, y: centerY + dir.y*width/2 + perp.y*height/2},
+                    {x: centerX - dir.x*width/2 + perp.x*height/2, y: centerY - dir.y*width/2 + perp.y*height/2},
+                    {x: centerX - dir.x*width/2 - perp.x*height/2, y: centerY - dir.y*width/2 - perp.y*height/2},
+                    {x: centerX + dir.x*width/2 - perp.x*height/2, y: centerY + dir.y*width/2 - perp.y*height/2}
                 ];
                 bestRect = {
                     center: {x: centerX, y: centerY},
                     width: width,
                     height: height,
-                    angle: Math.atan2(dir[1], dir[0]),
-                    corners: corners.map(p => ({x: p[0], y: p[1]}))
+                    angle: Math.atan2(dir.y, dir.x),
+                    corners: corners
                 };
             }
         }
@@ -271,7 +268,7 @@
         ctx.stroke();
     }
 
-    // Обработка кадра
+    // Основной цикл
     function processFrame() {
         if (!cameraActive || !video.videoWidth) {
             animationId = requestAnimationFrame(processFrame);
@@ -284,54 +281,58 @@
         ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
         const imageData = ctx.getImageData(0, 0, overlay.width, overlay.height);
 
-        // QR
-        const qr = detectQR(imageData, overlay.width, overlay.height);
+        // 1. Детекция QR и гомография
+        const qr = detectAndComputeHomography(imageData, overlay.width, overlay.height);
         if (qr) {
             qrDetected = true;
-            qrCorners = qr.corners;
-            scaleMMperPX = qr.mmPerPx;
+            qrCornersPx = qr.cornersPx;
+            homography = qr.homography;
+            // Рисуем рамку QR
             ctx.strokeStyle = "#0f0";
             ctx.lineWidth = 3;
             ctx.beginPath();
-            ctx.moveTo(qrCorners[0].x, qrCorners[0].y);
-            for (let i=1; i<qrCorners.length; i++) ctx.lineTo(qrCorners[i].x, qrCorners[i].y);
+            ctx.moveTo(qrCornersPx[0].x, qrCornersPx[0].y);
+            for (let i=1; i<qrCornersPx.length; i++) ctx.lineTo(qrCornersPx[i].x, qrCornersPx[i].y);
             ctx.closePath();
             ctx.stroke();
             statusDiv.innerText = "✅ QR найден. Ищем объекты...";
         } else {
             qrDetected = false;
-            scaleMMperPX = null;
+            homography = null;
             statusDiv.innerText = "⚠️ QR не виден.";
             animationId = requestAnimationFrame(processFrame);
             return;
         }
 
-        // Поиск всех четырёхугольных контуров
-        if (scaleMMperPX) {
-            allContours = findQuadContours(imageData, overlay.width, overlay.height);
-            // Отфильтровываем те, которые пересекаются с QR (по центру)
-            if (qrCorners) {
-                const qrMinX = Math.min(...qrCorners.map(p=>p.x));
-                const qrMaxX = Math.max(...qrCorners.map(p=>p.x));
-                const qrMinY = Math.min(...qrCorners.map(p=>p.y));
-                const qrMaxY = Math.max(...qrCorners.map(p=>p.y));
+        // 2. Поиск прямоугольных контуров
+        if (homography) {
+            allContours = findRotatedRects(imageData, overlay.width, overlay.height);
+            // Отфильтровываем контуры, которые пересекаются с QR
+            if (qrCornersPx) {
+                const qrMinX = Math.min(...qrCornersPx.map(p=>p.x));
+                const qrMaxX = Math.max(...qrCornersPx.map(p=>p.x));
+                const qrMinY = Math.min(...qrCornersPx.map(p=>p.y));
+                const qrMaxY = Math.max(...qrCornersPx.map(p=>p.y));
                 allContours = allContours.filter(cont => {
                     const cx = cont.center.x;
                     const cy = cont.center.y;
                     return !(cx > qrMinX && cx < qrMaxX && cy > qrMinY && cy < qrMaxY);
                 });
             }
-            // Если есть контуры, выбираем самый большой (по площади) или запоминаем все
             if (allContours.length > 0) {
-                // Сортируем по площади (ширина*высота)
-                allContours.sort((a,b) => (b.widthPx*b.heightPx) - (a.widthPx*a.heightPx));
+                allContours.sort((a,b) => (b.width*b.height) - (a.width*a.height));
                 selectedIndex = 0;
                 const best = allContours[0];
-                const widthMm = best.widthPx * scaleMMperPX;
-                const heightMm = best.heightPx * scaleMMperPX;
-                distanceDiv.innerText = `${widthMm.toFixed(1)} x ${heightMm.toFixed(1)} mm`;
+                // Преобразуем углы объекта через гомографию
+                const transformedCorners = best.corners.map(p => applyHomography(homography, p.x, p.y));
+                // Вычисляем длину и ширину в реальных мм (расстояния между преобразованными углами)
+                const widthReal = Math.hypot(transformedCorners[1].x - transformedCorners[0].x,
+                                             transformedCorners[1].y - transformedCorners[0].y);
+                const heightReal = Math.hypot(transformedCorners[2].x - transformedCorners[1].x,
+                                              transformedCorners[2].y - transformedCorners[1].y);
+                distanceDiv.innerText = `${widthReal.toFixed(1)} x ${heightReal.toFixed(1)} mm`;
                 statusDiv.innerText = "Объект найден. Нажмите Сохранить.";
-                // Рисуем повёрнутую рамку выбранного объекта
+                // Рисуем повёрнутую рамку (в пиксельных координатах)
                 drawRotatedRect(ctx, best, "#ff0", 4);
             } else {
                 selectedIndex = -1;
@@ -343,10 +344,10 @@
         animationId = requestAnimationFrame(processFrame);
     }
 
-    // Тап для выбора другого объекта (поиск ближайшего контура к точке касания)
+    // Тап для выбора другого объекта
     overlay.addEventListener('touchstart', (e) => {
         e.preventDefault();
-        if (!scaleMMperPX || allContours.length === 0) return;
+        if (!homography || allContours.length === 0) return;
         const rect = overlay.getBoundingClientRect();
         const touch = e.touches[0];
         const canvasX = (touch.clientX - rect.left) * (overlay.width / rect.width);
@@ -365,10 +366,13 @@
         }
         if (bestIdx !== -1 && bestDist < 100) {
             selectedIndex = bestIdx;
-            const selected = allContours[selectedIndex];
-            const widthMm = selected.widthPx * scaleMMperPX;
-            const heightMm = selected.heightPx * scaleMMperPX;
-            distanceDiv.innerText = `${widthMm.toFixed(1)} x ${heightMm.toFixed(1)} mm`;
+            const sel = allContours[selectedIndex];
+            const transformedCorners = sel.corners.map(p => applyHomography(homography, p.x, p.y));
+            const widthReal = Math.hypot(transformedCorners[1].x - transformedCorners[0].x,
+                                         transformedCorners[1].y - transformedCorners[0].y);
+            const heightReal = Math.hypot(transformedCorners[2].x - transformedCorners[1].x,
+                                          transformedCorners[2].y - transformedCorners[1].y);
+            distanceDiv.innerText = `${widthReal.toFixed(1)} x ${heightReal.toFixed(1)} mm`;
             statusDiv.innerText = "Выбран другой объект.";
         }
     });
@@ -386,14 +390,14 @@
         snapCtx.fillStyle = "#0f0";
         snapCtx.font = "20px monospace";
         snapCtx.fillText("MI-AI " + new Date().toLocaleString(), 20, 40);
-        if (selectedIndex !== -1 && allContours[selectedIndex] && scaleMMperPX) {
+        if (selectedIndex !== -1 && allContours[selectedIndex] && homography) {
             const sel = allContours[selectedIndex];
-            const w = (sel.widthPx * scaleMMperPX).toFixed(1);
-            const h = (sel.heightPx * scaleMMperPX).toFixed(1);
-            const sizeText = `${w} x ${h} mm`;
+            const transformed = sel.corners.map(p => applyHomography(homography, p.x, p.y));
+            const w = Math.hypot(transformed[1].x - transformed[0].x, transformed[1].y - transformed[0].y).toFixed(1);
+            const h = Math.hypot(transformed[2].x - transformed[1].x, transformed[2].y - transformed[1].y).toFixed(1);
             snapCtx.fillStyle = "yellow";
             snapCtx.font = "bold 28px monospace";
-            snapCtx.fillText(sizeText, 20, 90);
+            snapCtx.fillText(`${w} x ${h} mm`, 20, 90);
         }
         const dataUrl = snapCanvas.toDataURL('image/png');
         const win = window.open();
